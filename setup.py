@@ -4,7 +4,7 @@ with open("requirements.txt") as f:
     install_requires = f.read().splitlines()
 
 setup(
-    name="dbc",                       # 包名称
+    name="dbc-menamot",                       # 包名称
     version="0.1.0",                                   # 初始版本号
     description="A Python package for Discrete Bayesian and Minimax Classifiers",  # 简短描述
     long_description=open("README.md").read(),         # 详细描述
