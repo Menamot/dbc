@@ -1,12 +1,13 @@
 from numbers import Real, Integral
 
 import numpy as np
+import skfuzzy as fuzz
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.cluster import KMeans
 from sklearn.metrics import confusion_matrix
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils._param_validation import Interval, StrOptions, RealNotInt
-from sklearn.utils.validation import check_is_fitted, check_array
+from sklearn.utils.validation import check_is_fitted
 
 
 class DiscreteBayesianClassifier(BaseEstimator, ClassifierMixin):
@@ -58,7 +59,8 @@ class DiscreteBayesianClassifier(BaseEstimator, ClassifierMixin):
                     "n_clusters": Interval(Integral, 1, None, closed="left"),
                     "fuzzifier": Interval(Real, 1, None, closed="neither"),
                     "tol": Interval(Real, 0, None, closed="neither"),
-                    "max_iter": Interval(Integral, 1, None, closed="left")
+                    "max_iter": Interval(Integral, 1, None, closed="left"),
+                    "init": [callable, "array-like"]
                 }
             }
         ]
@@ -71,16 +73,18 @@ class DiscreteBayesianClassifier(BaseEstimator, ClassifierMixin):
             discretization_params=None,
             random_state=None
     ):
-        self.label_encoder = None
         self.prior = None
+        self.p_hat = None
+        self.label_encoder = None
+        self.cluster_centers = None
+
         self.random_state = random_state
         self.discretization_method = discretization_method
 
-        # 这里设置每种方法的默认值
         default_discretization_params = {
             "kmeans": {"n_clusters": 5, "algorithm": "lloyd"},
             "dt": {"criterion": "gini", "min_samples_split": 2},
-            "fcm": {"n_clusters": 3, "fuzzifier": 1.5, "tol": 1e-4, "max_iter": 300},
+            "fcm": {"n_clusters": 5, "fuzzifier": 1.5, "tol": 1e-4, "max_iter": 300, "init": None},
         }
         self.discretization_params = {
             **default_discretization_params.get(discretization_method, {}),
@@ -98,16 +102,26 @@ class DiscreteBayesianClassifier(BaseEstimator, ClassifierMixin):
         if self.discretization_method == "kmeans":
             self.discretization_model = KMeans(
                 random_state=self.random_state,
-                **self.discretization_params  # 字典解包
+                **self.discretization_params
             )
             self.discretization_model.fit(X)
-            self.cluster_centers_ = self.discretization_model.cluster_centers_
+            self.cluster_centers = self.discretization_model.cluster_centers_
             self.p_hat = compute_p_hat(self.discretization_model.labels_, y, n_classes,
                                        self.discretization_model.n_clusters)
 
+        elif self.discretization_method == "fcm":
+            self.cluster_centers, membership_degree, _, _, _, _, _ = fuzz.cluster.cmeans(
+                X.T,
+                c=self.discretization_params.get("n_clusters"),
+                m=self.discretization_params.get("fuzzifier"),
+                error=self.discretization_params.get("tol"),
+                maxiter=self.discretization_params.get("max_iter"),
+                init=self.discretization_params.get("init")
+            )
+            self.p_hat = compute_p_hat_with_degree(membership_degree, y, n_classes)
+
     def predict(self, X, prior=None, loss_function=None):
         check_is_fitted(self, ['p_hat', 'prior'])
-        X = check_array(X)  # 检查 X 是否为合法的数组或类似数组的结构
         if prior is None:
             prior = self.prior
         if loss_function is None:
@@ -118,6 +132,38 @@ class DiscreteBayesianClassifier(BaseEstimator, ClassifierMixin):
             return self.label_encoder.inverse_transform(
                 predict_profile_label(prior, self.p_hat, loss_function)[discrete_profiles]
             )
+        elif self.discretization_method == "fcm":
+            membership_degree_pred, _, _, _, _, _ = fuzz.cluster.cmeans_predict(
+                X.T,
+                cntr_trained=self.cluster_centers,
+                m=self.discretization_params.get("fuzzifier"),
+                error=self.discretization_params.get("tol"),
+                maxiter=self.discretization_params.get("max_iter")
+            )
+            prob = compute_posterior(membership_degree_pred, self.p_hat, prior, loss_function)
+            return self.label_encoder.inverse_transform(np.argmax(prob, axis=1))
+
+    def predict_proba(self, X, prior=None, loss_function=None):
+        check_is_fitted(self, ['p_hat', 'prior'])
+        if prior is None:
+            prior = self.prior
+        if loss_function is None:
+            raise ValueError("The parameter 'L' should not be None")
+
+        if self.discretization_method == 'kmeans':
+            class_risk = (prior.reshape(-1, 1) * loss_function).T @ self.p_hat
+            prob = 1 - (class_risk / np.sum(class_risk, axis=0))
+            return prob[:, self.discretization_model.predict(X)].T
+        elif self.discretization_method == 'fcm':
+            membership_degree_pred, _, _, _, _, _ = fuzz.cluster.cmeans_predict(
+                X.T,
+                cntr_trained=self.cluster_centers,
+                m=self.discretization_params.get("fuzzifier"),
+                error=self.discretization_params.get("tol"),
+                maxiter=self.discretization_params.get("max_iter")
+            )
+            prob = compute_posterior(membership_degree_pred, self.p_hat, prior, loss_function)
+            return prob
 
 
 def compute_p_hat(profile_labels: np.ndarray, y: np.ndarray, n_classes: int, n_clusters: int):
@@ -193,7 +239,7 @@ def predict_profile_label(prior, p_hat, loss_function):
     return l_predict
 
 
-def compute_conditional_risk(y_true: np.ndarray, y_pred: np.ndarray, loss_function: np.ndarray):
+def compute_conditional_risk(y_true: np.ndarray, y_pred: np.ndarray, loss_function: np.ndarray = None):
     """
     Computes the conditional risk and the normalized confusion matrix for given true labels,
     predicted labels, and a loss function.
@@ -212,7 +258,9 @@ def compute_conditional_risk(y_true: np.ndarray, y_pred: np.ndarray, loss_functi
     :return:
         A tuple containing the conditional risk and the normalized confusion matrix.
     """
-
+    if loss_function is None:
+        n_classes = len(set(y_true))
+        loss_function = np.ones((n_classes, n_classes)) - np.eye(n_classes)
     # 使用LabelEncoder将字符串标签转换为整数编码
     label_encoder = LabelEncoder()
     y_true_encoded = label_encoder.fit_transform(y_true)
@@ -225,3 +273,40 @@ def compute_conditional_risk(y_true: np.ndarray, y_pred: np.ndarray, loss_functi
     conditional_risk = np.sum(np.multiply(loss_function, confusion_matrix_normalized), axis=1)
 
     return conditional_risk, confusion_matrix_normalized
+
+
+def compute_p_hat_with_degree(degree, y, n_classes):
+    n_clusters = degree.shape[0]
+    p_hat = np.zeros((n_classes, n_clusters))
+    for k in range(n_classes):
+        indices_of_class_k = np.where(y == k)[0]
+        mk = indices_of_class_k.size
+        for t in range(n_clusters):
+            if mk > 0:  # 确保分母不为零
+                p_hat[k, t] = np.sum(degree[t, indices_of_class_k]) / mk
+    return p_hat
+
+
+def compute_posterior(membership_degree, p_hat, prior, loss_function):
+    """
+    Parameters
+    ----------
+    membership_degree : Array
+
+    p_hat : Array of floats
+        Probability estimate of observing the features profile.
+    prior : Array of floats
+        Real class proportions.
+    loss_function : Array
+        Loss function.
+
+    Returns
+    -------
+    Yhat : Vector
+        Predicted labels.
+    """
+
+    class_risk = membership_degree.T @ ((prior.reshape(-1, 1) * loss_function).T @ p_hat).T + 1e-10
+    a = np.sum(class_risk, axis=1)[:, np.newaxis] - class_risk
+    prob = np.divide(a, np.sum(a, axis=1)[:, np.newaxis])
+    return prob

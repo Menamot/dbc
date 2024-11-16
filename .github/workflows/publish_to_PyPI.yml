@@ -1,6 +1,6 @@
 name: Publish to PyPI
 on:
-  workflow_dispatch:  # 手动触发工作流
+  workflow_dispatch:
 
 jobs:
   build-and-publish:
