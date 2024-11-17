@@ -21,6 +21,10 @@ from sklearn.datasets import load_iris
 # Load dataset
 X, y = load_iris(return_X_y=True)
 
+# Set loss function
+n_classes = len(set(y))
+loss_function = np.ones((n_classes,n_classes)) - np.eye(n_classes) # Here we use 0-1 loss
+
 # Create classifier instance
 clf = DiscreteBayesianClassifier(discretization_method="kmeans", discretization_params={"n_clusters": 3})
 
@@ -28,7 +32,7 @@ clf = DiscreteBayesianClassifier(discretization_method="kmeans", discretization_
 clf.fit(X, y)
 
 # Predict
-y_pred = clf.predict(X, loss_function=np.identity(len(np.unique(y))))
+y_pred = clf.predict(X, loss_function=loss_function)
 print(y_pred)
 ```
 
