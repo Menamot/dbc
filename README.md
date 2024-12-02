@@ -9,36 +9,44 @@
   - **FCM** (Fuzzy C-Means): Based on fuzzy C-means clustering。
   - **DT** (Decision Tree): Based on decision tree discretization. (to be implemented)
 
+### How to install
+
+To install the `dbc-menamot` package, run the following command in your terminal:
+
+```sh
+pip install dbc-menamot
+```
+
+Make sure you have activated the correct Python environment to avoid potential dependency conflicts.
+
 ### Example of KMeans Discretization
 
 Below is an example of how to use the KMeans discretization method:
 
 ```python
-import numpy as np
-from dbc import DiscreteBayesianClassifier
+from dbc import KmeansDiscreteBayesianClassifier
 from sklearn.datasets import load_iris
 
 # Load dataset
 X, y = load_iris(return_X_y=True)
 
-# Set loss function
-n_classes = len(set(y))
-loss_function = np.ones((n_classes,n_classes)) - np.eye(n_classes) # Here we use 0-1 loss
-
 # Create classifier instance
-clf = DiscreteBayesianClassifier(discretization_method="kmeans", discretization_params={"n_clusters": 3})
+clf = KmeansDiscreteBayesianClassifier(n_clusters=10)
 
 # Fit model
 clf.fit(X, y)
 
 # Predict
-y_pred = clf.predict(X, loss_function=loss_function)
+y_pred = clf.predict(X)
 print(y_pred)
 ```
 
 ## Reference
 
 - [1] C. Gilet, “Classifieur Minimax Discret pour l’aide  au Diagnostic Médical dans la  Médecine Personnalisée,” Université Côte d’Azur, 2021.
+- [2] C. Gilet, S. Barbosa, and L. Fillatre, “Discrete Box-Constrained Minimax Classifier for Uncertain and Imbalanced Class Proportions,” IEEE Trans. Pattern Anal. Mach. Intell., vol. 44, no. 6, pp. 2923–2937, Jun. 2022, doi: 10.1109/TPAMI.2020.3046439.
+- [3] Chen, Wenlong, et al. "Robust Discrete Bayesian Classifier Under Covariate and Label Noise." International Conference on Scalable Uncertainty Management. Cham: Springer Nature Switzerland, 2024.
+
 
 
 ## Contribution

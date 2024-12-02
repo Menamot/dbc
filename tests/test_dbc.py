@@ -28,7 +28,7 @@ def test_predict_before_fit():
     X = np.array([[1, 2], [3, 4]])
     classifier = DiscreteBayesianClassifier(discretization_method="kmeans", random_state=42)
     with pytest.raises(NotFittedError):
-        classifier.predict(X, prior=np.array([0.5, 0.5]), loss_function=np.array([[0, 1], [1, 0]]))
+        classifier.predict(X, prior_pred=np.array([0.5, 0.5]), loss_function=np.array([[0, 1], [1, 0]]))
 
 
 def test_predict():
@@ -42,7 +42,7 @@ def test_predict():
     prior = np.array([0.5, 0.5])
     loss_function = np.array([[0, 1], [1, 0]])
 
-    predictions = classifier.predict(X_test, prior=prior, loss_function=loss_function)
+    predictions = classifier.predict(X_test, prior_pred=prior, loss_function=loss_function)
     assert len(predictions) == len(X_test)
     assert set(predictions).issubset(set(y_train))
 
@@ -57,4 +57,4 @@ def test_invalid_loss_function_in_predict():
     prior = np.array([0.5, 0.5])
 
     with pytest.raises(ValueError):
-        classifier.predict(X_test, prior=prior, loss_function=None)
+        classifier.predict(X_test, prior_pred=prior, loss_function=None)
