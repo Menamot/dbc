@@ -3,6 +3,7 @@ from itertools import combinations
 
 from sklearn.metrics import confusion_matrix
 from sklearn.preprocessing import LabelEncoder
+from sklearn.tree import DecisionTreeClassifier
 
 
 def compute_p_hat(profile_labels: np.ndarray, y: np.ndarray, n_classes: int, n_clusters: int):
@@ -150,6 +151,31 @@ def compute_posterior(membership_degree, p_hat, prior, loss_function):
     prob = np.divide(a, np.sum(a, axis=1)[:, np.newaxis])
     return prob
 
+
+def discretize_features(samples, decision_tree_model):
+    '''
+    Parameters
+    ----------
+    samples : DataFrame
+    Features to be discretized.
+    decision_tree_model : Decision Tree Classifier Model
+    Model used for discretization.
+
+    Returns
+    -------
+    discretized_features : Vector
+        Discretized features.
+    '''
+    applied_samples = DecisionTreeClassifier.apply(decision_tree_model, samples, check_input=True)
+
+    def create_value_index_map(applied_samples):
+        unique_values, inverse_indices = np.unique(applied_samples, return_inverse=True)
+        value_to_index_map = {value: idx for idx, value in enumerate(unique_values)}
+        return np.array([value_to_index_map[value] for value in applied_samples])
+
+    discretized_features = create_value_index_map(applied_samples)
+
+    return discretized_features
 
 
 def compute_global_risk(conditional_risk, prior):
