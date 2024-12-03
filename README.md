@@ -7,7 +7,7 @@
 - **Discretization Methods**:
   - **KMeans**: Based on the K-means clustering algorithm.
   - **FCM** (Fuzzy C-Means): Based on fuzzy C-means clustering。
-  - **DT** (Decision Tree): Based on decision tree discretization. (to be implemented)
+  - **DT** (Decision Tree): Based on decision tree discretization.
 
 ### How to install
 
@@ -40,6 +40,8 @@ clf.fit(X, y)
 y_pred = clf.predict(X)
 print(y_pred)
 ```
+
+There are more examples in the example folder
 
 ## Reference
 
