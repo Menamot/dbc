@@ -114,6 +114,37 @@ def compute_conditional_risk(y_true: np.ndarray, y_pred: np.ndarray, loss_functi
 
     return conditional_risk, confusion_matrix_normalized
 
+def compute_p_hat_soft(degree, y_soft, n_classes):
+    n_clusters = degree.shape[0]
+    p_hat = np.zeros((n_classes, n_clusters))
+
+    for k in range(n_classes):
+        # 使用每个样本属于类别k的概率
+        class_probs = y_soft[:, k]  # 获取第k类的概率
+
+        for t in range(n_clusters):
+            # 计算加权和
+            weighted_sum = np.sum(degree[t, :] * class_probs)
+            # 计算概率和
+            prob_sum = np.sum(class_probs)
+
+            if prob_sum > 0:
+                p_hat[k, t] = weighted_sum / prob_sum
+
+    return p_hat
+
+def compute_p_hat_with_soft_labels(degree, y):
+    """
+    degree: shape (n_clusters, n_samples)
+    y: shape (n_samples, n_classes), each row is a soft label or one-hot
+    returns: p_hat of shape (n_classes, n_clusters)
+    """
+    y_T = y.T  # shape (n_classes, n_samples)
+    sum_y = np.sum(y_T, axis=1, keepdims=True)  # shape (n_classes, 1)
+    # Avoid division by zero
+    sum_y[sum_y == 0] = 1
+    p_hat = (y_T @ degree.T) / sum_y  # shape (n_classes, n_clusters)
+    return p_hat
 
 def compute_p_hat_with_degree(degree, y, n_classes):
     n_clusters = degree.shape[0]
@@ -126,7 +157,59 @@ def compute_p_hat_with_degree(degree, y, n_classes):
                 p_hat[k, t] = np.sum(degree[t, indices_of_class_k]) / mk
     return p_hat
 
+# def compute_p_hat_with_degree(degree, y, n_classes):
+#     n_clusters = degree.shape[0]
+#     n_samples = degree.shape[1]
+#     p_hat = np.zeros((n_classes, n_clusters))
+#
+#     # degree_sum_over_t: 每个样本 i 的 degree 总和 (shape: n_samples,)
+#     degree_sum_over_t = np.sum(degree, axis=0)
+#
+#     for k in range(n_classes):
+#         indices_of_class_k = np.where(y == k)[0]
+#         mk = indices_of_class_k.size
+#         for t in range(n_clusters):
+#             if mk > 0:
+#                 # 每个 i 的 degree 权重 * degree 本身
+#                 weighted_degree = (degree[t, indices_of_class_k] / degree_sum_over_t[indices_of_class_k]) * degree[t, indices_of_class_k]
+#                 p_hat[k, t] = np.sum(weighted_degree) / mk
+#     return p_hat
 
+def compute_prob(membership_degree,membership_degree_pred, p_hat, prior,option=1):
+    # P(Z)=\sum_i P(Z|X_i) * P(X_i)
+    # pz = np.sum(membership_degree.T, axis=0)/membership_degree.shape[1]
+
+    # P(Z)=\sum_k P(Z|Y) * P(Y)
+    pz = np.sum(prior.reshape(-1,1) * p_hat, axis=0)
+    diag_matrix = np.diag(1.0 / pz)
+    return prior * (membership_degree_pred.T @ diag_matrix @ p_hat.T)
+
+# def compute_derivative_part(membership_degree,membership_degree_pred, p_hat, loss_function):
+#     pz = np.sum(membership_degree.T, axis=0) / membership_degree.shape[1]
+#     diag_matrix = np.diag(1.0 / pz)
+#     return  membership_degree_pred.T @ diag_matrix @ p_hat.T @ loss_function
+#
+# def compute_risk(membership_degree,membership_degree_pred, p_hat, prior, loss_function):
+#     pz = np.sum(membership_degree.T, axis=0) / membership_degree.shape[1]
+#     diag_matrix = np.diag(1.0 / pz)
+#     return  prior * (membership_degree_pred.T @ diag_matrix @ p_hat.T) @ loss_function
+
+# def compute_derivative(membership_degree,membership_degree_pred, p_hat, prior, loss_function):
+#     a = compute_risk(membership_degree,membership_degree_pred, p_hat, prior, loss_function)  # (N, C)
+#     b = compute_derivative_part(membership_degree,membership_degree_pred, p_hat, loss_function)  # (N, C)
+#
+#     avg_risk = np.mean(a, axis=1, keepdims=True)  # (N, 1)
+#     avg_derivate = np.mean(b, axis=1, keepdims=True)  # (N, 1)
+#
+#     gradient_per_sample = 2 * (a - avg_risk) * (b - avg_derivate)  # (N, C)
+#
+#     # 现在，我们需要将其映射回 K 维空间
+#     final_gradient = membership_degree @ gradient_per_sample  # (K, C) @ (N, C) = (K,)
+#
+#     return final_gradient
+
+def compute_b_risk(membership_degree, p_hat, prior, loss_function):
+    return membership_degree.T @ ((prior.reshape(-1, 1) * loss_function).T @ p_hat).T
 def compute_posterior(membership_degree, p_hat, prior, loss_function):
     """
     Parameters
@@ -480,3 +563,236 @@ def compute_piStar(pHat, y_train, K, L, N, Box):
             RStar = R
 
     return piStar, rStar, RStar, V_iter, stockpi
+
+def compute_SPDBC_class_conditional_risk(X, y, class_index, loss_function, p_hat, membership_degree, pi):
+    nb_class_k = np.unique(y, return_counts=True)[1]
+    # K = loss_function.shape[0]
+    # T = p_hat.shape[1]
+    r = 0
+
+    # for i in range(X.shape[0]):
+    #     lambd = np.zeros(K)
+    #     for l in range(0, K):
+    #         for t in range(0, T):
+    #             for k in range(0, K):
+    #                 lambd[l] += loss_function[k, l] * pi[k] * p_hat[k, t] * membership_degree.T[i, t]
+    #     for l in range(0, K):
+    #         if lambd[l] == np.min(lambd) and y[i] == class_index:
+    #             r += loss_function[class_index, l] / nb_class_k[class_index]
+
+    # 预先计算一次固定部分 (K, K, T) 张量
+    M = loss_function[:, :, None] * pi[:, None, None] * p_hat[:, None, :]  # (K, K, T)
+
+    for i in range(X.shape[0]):
+        # 提取样本i的membership度 (T,)
+        membership = membership_degree.T[i]  # (T,)
+
+        # 计算 weighted sum，先做广播相乘，再在特征T维度求和
+        temp = M * membership[None, None, :]  # (K, K, T)
+        lambd = temp.sum(axis=2).sum(axis=0)  # (K,)
+
+        # 找到lambd最小值对应的类别l_min
+        l_min = np.argmin(lambd)
+
+        # 只对真实标签是class_index的样本进行累加
+        if y[i] == class_index:
+            r += loss_function[class_index, l_min] / nb_class_k[class_index]
+
+    return r
+
+
+# def compute_SPDBC_pi_star(X, y, loss_function, p_hat, membership_degree, pi, alpha=1, n_iter=300, eps = 1e-3):
+#     """
+#     优化SPDBC的先验概率pi，使用Projected Gradient Descent方法
+#     """
+#
+#     K = loss_function.shape[0]
+#
+#     # 计算初始的class-conditional risks和梯度
+#     class_conditional_risk = np.zeros(K)
+#     for k in range(K):
+#         class_conditional_risk[k] = compute_SPDBC_class_conditional_risk(
+#             X, y, k, loss_function, p_hat, membership_degree, pi
+#         )
+#     global_risk = compute_global_risk(class_conditional_risk, pi)
+#     G = class_conditional_risk - global_risk * np.ones(K)
+#
+#     for n in range(1, n_iter):
+#         # 步长调整
+#         gamma = alpha / n
+#         eta = max(1.0, np.linalg.norm(G))
+#
+#         # 更新 pi_new
+#         w = pi + (gamma / eta) * G
+#         pi_new = proj_simplex_Condat(K, w)
+#
+#         # 重新计算risk和梯度
+#         class_conditional_risk_new = np.zeros(K)
+#         for k in range(K):
+#             class_conditional_risk_new[k] = compute_SPDBC_class_conditional_risk(
+#                 X, y, k, loss_function, p_hat, membership_degree, pi_new
+#             )
+#         global_risk_new = compute_global_risk(class_conditional_risk_new, pi_new)
+#         G_new = class_conditional_risk_new - global_risk_new * np.ones(K)
+#
+#         # 收敛检测
+#         if np.linalg.norm(G_new) < eps:
+#             # print(f"Converged after {n} iterations.")
+#             break
+#
+#         # 更新 G
+#         G = G_new
+#         pi = pi_new
+#     return pi
+# def compute_SPDBC_pi_star(X, y, loss_function, p_hat, membership_degree, pi,
+#                           alpha=1, n_iter=300, eps=1e-3, return_history=False):
+#     """
+#     优化SPDBC的先验概率pi，使用Projected Gradient Descent方法。
+#
+#     Parameters
+#     ----------
+#     X : ndarray
+#         特征数据
+#     y : ndarray
+#         标签数据
+#     loss_function : ndarray
+#         K x D的损失矩阵
+#     p_hat : ndarray
+#         条件概率估计值
+#     membership_degree : ndarray
+#         每个样本对每个profile的隶属度
+#     pi : ndarray
+#         初始先验概率
+#     alpha : float
+#         学习率调节因子
+#     n_iter : int
+#         最大迭代次数
+#     eps : float
+#         收敛阈值
+#     return_history : bool
+#         是否返回risk收敛历史
+#
+#     Returns
+#     -------
+#     pi : ndarray
+#         优化后的先验概率
+#     risk_history : list (可选)
+#         每次迭代的global risk值
+#     """
+#
+#     K = loss_function.shape[0]
+#     risk_history = []
+#
+#     for n in range(1, n_iter + 1):
+#         # 计算class-conditional risk
+#         class_conditional_risk = np.array([
+#             compute_SPDBC_class_conditional_risk(X, y, k, loss_function, p_hat, membership_degree, pi)
+#             for k in range(K)
+#         ])
+#         global_risk = np.dot(pi, class_conditional_risk)
+#
+#
+#         G = class_conditional_risk - global_risk
+#         risk_history.append(np.sum(np.abs(G)))
+#         # 步长与eta
+#         gamma = alpha / n
+#         eta = max(1.0, np.sum(np.abs(G)))
+#
+#         # 梯度更新并投影
+#         w = pi + (gamma / eta) * G
+#         pi_new = proj_simplex_Condat(K, w)
+#
+#         # 重新计算risk和G
+#         class_conditional_risk_new = np.array([
+#             compute_SPDBC_class_conditional_risk(X, y, k, loss_function, p_hat, membership_degree, pi_new)
+#             for k in range(K)
+#         ])
+#         global_risk_new = np.dot(pi_new, class_conditional_risk_new)
+#         G_new = class_conditional_risk_new - global_risk_new
+#
+#         if np.sum(np.abs(G_new)) < eps:
+#             risk_history.append(np.sum(np.abs(G_new)))
+#             break
+#
+#         pi = pi_new
+#         G = G_new
+#
+#     if return_history:
+#         return pi, risk_history
+#     else:
+#         return pi
+def compute_SPDBC_pi_star(X, y, loss_function, p_hat, membership_degree, pi,
+                          alpha=1, beta=0.9, n_iter=300, eps=1e-3, return_history=False):
+    """
+    优化SPDBC的先验概率pi，使用带动量的Projected Gradient Descent方法。
+
+    Parameters
+    ----------
+    X : ndarray
+        特征数据
+    y : ndarray
+        标签数据
+    loss_function : ndarray
+        K x D的损失矩阵
+    p_hat : ndarray
+        条件概率估计值
+    membership_degree : ndarray
+        每个样本对每个profile的隶属度
+    pi : ndarray
+        初始先验概率
+    alpha : float
+        学习率调节因子
+    beta : float
+        动量因子（通常为0.9）
+    n_iter : int
+        最大迭代次数
+    eps : float
+        收敛阈值（使用 ∑|G|）
+    return_history : bool
+        是否返回risk收敛历史（∑|G|）
+
+    Returns
+    -------
+    pi : ndarray
+        优化后的先验概率
+    risk_history : list (可选)
+        每次迭代的梯度绝对值总和（用于收敛观察）
+    """
+    K = loss_function.shape[0]
+    risk_history = []
+    v = np.zeros(K)  # 初始化动量项
+
+    for n in range(1, n_iter + 1):
+        # 计算当前 class-conditional 风险和 global 风险
+        class_conditional_risk = np.array([
+            compute_SPDBC_class_conditional_risk(X, y, k, loss_function, p_hat, membership_degree, pi)
+            for k in range(K)
+        ])
+        global_risk = np.dot(pi, class_conditional_risk)
+        G = class_conditional_risk - global_risk
+
+        grad_norm = np.linalg.norm(G)
+        risk_history.append(grad_norm)
+
+        # 判断收敛
+        if grad_norm < eps:
+            break
+
+        # 更新动量项
+        v = beta * v + (1 - beta) * G
+
+        # 步长和归一化因子
+        gamma = alpha / n
+        eta = max(1.0, np.linalg.norm(v))  # 用动量向量v代替G
+
+        # 使用带动量的方向更新 pi
+        w = pi + (gamma / eta) * v
+        pi_new = proj_simplex_Condat(K, w)
+
+        # 更新 pi
+        pi = pi_new
+
+    if return_history:
+        return pi, risk_history
+    else:
+        return pi

@@ -17,6 +17,10 @@ from dbc.utils import (
     discretize_features,
     compute_p_hat_with_degree,
     compute_posterior,
+    compute_prob,
+    compute_b_risk,
+    compute_p_hat_soft,
+    compute_p_hat_with_soft_labels
 )
 
 
@@ -1100,6 +1104,7 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
         self.fuzzifier = fuzzifier
         self.init = init
         self.cluster_centers = cluster_centers
+        self.membership_degree = None
         self.max_iter = max_iter
         self.tol = tol
         self.metric = metric
@@ -1108,7 +1113,7 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
 
     def _fit_discretization(self, X, y, n_classes):
         if self.cluster_centers is None:
-            self.cluster_centers, membership_degree, _, _, _, _, _ = fuzz.cluster.cmeans(
+            self.cluster_centers, self.membership_degree, _, _, _, _, _ = fuzz.cluster.cmeans(
                 X.T,
                 c=self.n_clusters,
                 m=self.fuzzifier,
@@ -1119,7 +1124,7 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
                 seed=self.random_state,
             )
         else:
-            membership_degree, _, _, _, _, _ = fuzz.cluster.cmeans_predict(
+            self.membership_degree, _, _, _, _, _ = fuzz.cluster.cmeans_predict(
                 X.T,
                 cntr_trained=self.cluster_centers,
                 m=self.fuzzifier,
@@ -1129,7 +1134,7 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
                 init=self.init,
                 seed=self.random_state,
             )
-        self.p_hat = compute_p_hat_with_degree(membership_degree, y, n_classes)
+        self.p_hat = compute_p_hat_with_degree(self.membership_degree, y, n_classes)
 
     def _predict_probabilities(self, X, prior):
 
@@ -1140,12 +1145,31 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
             error=self.tol,
             maxiter=self.max_iter,
         )
-        prob = compute_posterior(membership_degree_pred, self.p_hat, prior, self.loss_function)
+        # prob = compute_posterior(membership_degree_pred, self.p_hat, prior, self.loss_function)
+        prob = compute_prob(self.membership_degree, membership_degree_pred, self.p_hat, prior)
         return prob
 
+    # def _predict_profiles(self, X, prior):
+    #     prob = self._predict_probabilities(X, prior)
+    #     return self.label_encoder.inverse_transform(np.argmax(prob, axis=1))
     def _predict_profiles(self, X, prior):
-        prob = self._predict_probabilities(X, prior)
-        return self.label_encoder.inverse_transform(np.argmax(prob, axis=1))
+        membership_degree_pred, _, _, _, _, _ = fuzz.cluster.cmeans_predict(
+            X.T,
+            cntr_trained=self.cluster_centers,
+            m=self.fuzzifier,
+            error=self.tol,
+            maxiter=self.max_iter,
+        )
+        risk = compute_b_risk(membership_degree_pred, self.p_hat, prior, self.loss_function)
+        return self.label_encoder.inverse_transform(np.argmin(risk, axis=1))
+    # def _predict_profiles(self, X, prior):
+    #     prob = self._predict_probabilities(X, prior)
+    #     # 对每一行样本，根据概率分布随机选择一个类别
+    #     predictions = np.array([
+    #         np.random.choice(len(p), p=p)
+    #         for p in prob
+    #     ])
+    #     return self.label_encoder.inverse_transform(predictions)
 
 
 class CmeansDiscreteBayesianClassifier(_CmeansDiscretization):
@@ -1224,3 +1248,20 @@ class CmeansDiscreteBayesianClassifier(_CmeansDiscretization):
             random_state=random_state,
         )
         self.prior_attribute = "prior"
+
+    def em(self, X_target,y_source):
+        membership_degree_target, _, _, _, _, _ = fuzz.cluster.cmeans_predict(
+            X_target.T,
+            cntr_trained=self.cluster_centers,
+            m=self.fuzzifier,
+            error=self.tol,
+            maxiter=self.max_iter,
+        )
+        posterior_iter = compute_prob(self.membership_degree, membership_degree_target, self.p_hat, self.prior)
+        for i in range(100):
+            prior_iter = np.sum(posterior_iter, axis=0) / posterior_iter.shape[0]
+            p_hat_iter = compute_p_hat_with_soft_labels(np.concatenate((self.membership_degree, membership_degree_target), axis=1), np.concatenate((np.eye(len(self.prior))[y_source], posterior_iter), axis=0))
+
+            posterior_iter = compute_prob(self.membership_degree, membership_degree_target, p_hat_iter, prior_iter)
+        return posterior_iter, p_hat_iter, prior_iter
+
