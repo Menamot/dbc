@@ -16,11 +16,9 @@ from dbc.utils import (
     predict_profile_label,
     discretize_features,
     compute_p_hat_with_degree,
-    compute_posterior,
     compute_prob,
     compute_b_risk,
-    compute_p_hat_soft,
-    compute_p_hat_with_soft_labels
+    # compute_p_hat_with_soft_labels
 )
 
 
@@ -35,7 +33,7 @@ class BaseDiscreteBayesianClassifier(BaseEstimator):
 
     Attributes
     ----------
-    prior: ndarray of shape (n_classes,)
+    prior: ndarray of shape (n_classes, )
         Estimated prior probabilities for each class.
 
     loss_function: ndarray of shape (n_classes, n_classes)
@@ -69,13 +67,13 @@ class BaseDiscreteBayesianClassifier(BaseEstimator):
 
         Parameters
         ----------
-        X : {array-like, sparse matrix} of shape (n_samples, n_features)
+        X: {array-like, sparse matrix} of shape (n_samples, n_features)
             Training instances to cluster.
 
-        y : {array-like, sparse matrix} of shape (n_samples,)
+        y: {array-like, sparse matrix} of shape (n_samples, )
             Labels for training instances.
 
-        loss_function : {'01'}, callable or array-like of shape (n_clusters, n_features), default='01'
+        loss_function: {'01'}, callable or array-like of shape (n_clusters, n_features), default='01'
             Loss function for calculating class risk. Currently, only the "01" loss function is supported.
 
         Returns
@@ -105,7 +103,7 @@ class BaseDiscreteBayesianClassifier(BaseEstimator):
 
         prior_pred : ndarray of shape (n_classes,) or None, default=None
             Prior predictions to be used in conjunction with `X`. If
-            None, the method utilizes the model's `prior_attribute`.
+            None, the method uses the model's `prior_attribute`.
 
         Returns
         -------
@@ -205,7 +203,7 @@ class _KmeansDiscretization(BaseDiscreteBayesianClassifier, KMeans):
         This method initializes and fits a `KMeans` model to the provided feature
         matrix `X` and computes p_hat, the estimated probabilities for each class
         in different profiles. If prior_attribute is 'prior_star', it also computes
-        prior_star, the best prior probability that minimize the maximum class risk.
+        prior_star, the best prior probability that minimizes the maximum class risk.
         """
         self.discretization_model = KMeans(
             n_clusters=self.n_clusters,
@@ -227,7 +225,9 @@ class _KmeansDiscretization(BaseDiscreteBayesianClassifier, KMeans):
             self.discretization_model.n_clusters,
         )
         if self.prior_attribute == "prior_star":
-            self.prior_star = compute_piStar(self.p_hat, y, n_classes, self.loss_function, 1000, self.box)[0]
+            self.prior_star = compute_piStar(
+                self.p_hat, y, n_classes, self.loss_function, 1000, self.box
+            )[0]
 
     def _transform_to_discrete_profiles(self, X):
         """
@@ -244,7 +244,9 @@ class _KmeansDiscretization(BaseDiscreteBayesianClassifier, KMeans):
         """
         discrete_profiles = self._transform_to_discrete_profiles(X)
         return self.label_encoder.inverse_transform(
-            predict_profile_label(prior, self.p_hat, self.loss_function)[discrete_profiles]
+            predict_profile_label(prior, self.p_hat, self.loss_function)[
+                discrete_profiles
+            ]
         )
 
     def _predict_probabilities(self, X, prior):
@@ -284,9 +286,9 @@ class KmeansDiscreteBayesianClassifier(_KmeansDiscretization):
         data for the initial centroids.
 
         * If an array is passed, it should be of shape (n_clusters, n_features)
-        and gives the initial centers.
+        and give the initial centers.
 
-        * If a callable is passed, it should take arguments X, n_clusters and a
+        * If a callable is passed, it should take arguments X, n_clusters, and a
         random state and return an initialization.
 
         For an example of how to use the different `init` strategy, see the example
@@ -314,15 +316,15 @@ class KmeansDiscreteBayesianClassifier(_KmeansDiscretization):
     verbose : int, default=0
         Verbosity mode.
 
-    random_state : int, RandomState instance or None, default=None
+    random_state : int, RandomState instance, or None, default=None
         Determines random number generation for centroid initialization. Use
         an int to make the randomness deterministic.
         See :term:`Glossary <random_state>`.
 
-    copy_x : bool, default=True
-        When pre-computing distances it is more numerically accurate to center
+    copy_x : bool, default=True,
+        When pre-computing distances, it is more numerically accurate to center
         the data first. If copy_x is True (default), then the original data is
-        not modified. If False, the original data is modified, and put back
+        not modified. If False, the original data is modified and put back
         before the function returns, but small numerical differences may be
         introduced by subtracting and then adding the data mean. Note that if
         the original data is not C-contiguous, a copy will be made even if
@@ -332,8 +334,8 @@ class KmeansDiscreteBayesianClassifier(_KmeansDiscretization):
     algorithm : {"lloyd", "elkan"}, default="lloyd"
         K-means algorithm to use. The classical EM-style algorithm is `"lloyd"`.
         The `"elkan"` variation can be more efficient on some datasets with
-        well-defined clusters, by using the triangle inequality. However, it's
-        more memory intensive due to the allocation of an extra array of shape
+        well-defined clusters by using the triangle inequality. However, it's
+        more memory-intensive due to the allocation of an extra array of shape
         `(n_samples, n_clusters)`.
 
 
@@ -434,7 +436,7 @@ class KmeansDiscreteMinimaxClassifier(_KmeansDiscretization):
         * If an array is passed, it should be of shape (n_clusters, n_features)
         and gives the initial centers.
 
-        * If a callable is passed, it should take arguments X, n_clusters and a
+        * If a callable is passed, it should take arguments X, n_clusters, and a
         random state and return an initialization.
 
         For an example of how to use the different `init` strategy, see the example
@@ -462,7 +464,7 @@ class KmeansDiscreteMinimaxClassifier(_KmeansDiscretization):
     verbose : int, default=0
         Verbosity mode.
 
-    random_state : int, RandomState instance or None, default=None
+    random_state : int, RandomState instance, or None, default=None
         Determines random number generation for centroid initialization. Use
         an int to make the randomness deterministic.
         See :term:`Glossary <random_state>`.
@@ -548,7 +550,9 @@ class KmeansDiscreteMinimaxClassifier(_KmeansDiscretization):
         self.prior_attribute = "prior_star"
 
 
-class _DecisionTreeDiscretization(BaseDiscreteBayesianClassifier, DecisionTreeClassifier):
+class _DecisionTreeDiscretization(
+    BaseDiscreteBayesianClassifier, DecisionTreeClassifier
+):
     """
     Handles the discretization of continuous features for DBC and DMC
     using Decision Tree partitioning and provides functionality to fit, transform, and predict
@@ -630,7 +634,9 @@ class _DecisionTreeDiscretization(BaseDiscreteBayesianClassifier, DecisionTreeCl
             self.discretization_model.get_n_leaves(),
         )
         if self.prior_attribute == "prior_star":
-            self.prior_star = compute_piStar(self.p_hat, y, n_classes, self.loss_function, 1000, self.box)[0]
+            self.prior_star = compute_piStar(
+                self.p_hat, y, n_classes, self.loss_function, 1000, self.box
+            )[0]
 
     def _transform_to_discrete_profiles(self, X):
         """
@@ -649,7 +655,9 @@ class _DecisionTreeDiscretization(BaseDiscreteBayesianClassifier, DecisionTreeCl
         """
         discrete_profiles = self._transform_to_discrete_profiles(X)
         return self.label_encoder.inverse_transform(
-            predict_profile_label(prior, self.p_hat, self.loss_function)[discrete_profiles]
+            predict_profile_label(prior, self.p_hat, self.loss_function)[
+                discrete_profiles
+            ]
         )
 
     def _predict_probabilities(self, X, prior):
@@ -727,7 +735,7 @@ class DecisionTreeDiscreteBayesianClassifier(_DecisionTreeDiscretization):
         valid partition of the node samples is found, even if it requires to
         effectively inspect more than ``max_features`` features.
 
-    random_state : int, RandomState instance or None, default=None
+    random_state : int, RandomState instance, or None, default=None
         Controls the randomness of the estimator. The features are always
         randomly permuted at each split, even if ``splitter`` is set to
         ``"best"``. When ``max_features < n_features``, the algorithm will
@@ -932,7 +940,7 @@ class DecisionTreeDiscreteMinimaxClassifier(_DecisionTreeDiscretization):
         valid partition of the node samples is found, even if it requires to
         effectively inspect more than ``max_features`` features.
 
-    random_state : int, RandomState instance or None, default=None
+    random_state : int, RandomState instance, or None, default=None
         Controls the randomness of the estimator. The features are always
         randomly permuted at each split, even if ``splitter`` is set to
         ``"best"``. When ``max_features < n_features``, the algorithm will
@@ -1113,15 +1121,17 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
 
     def _fit_discretization(self, X, y, n_classes):
         if self.cluster_centers is None:
-            self.cluster_centers, self.membership_degree, _, _, _, _, _ = fuzz.cluster.cmeans(
-                X.T,
-                c=self.n_clusters,
-                m=self.fuzzifier,
-                error=self.tol,
-                maxiter=self.max_iter,
-                metric=self.metric,
-                init=self.init,
-                seed=self.random_state,
+            self.cluster_centers, self.membership_degree, _, _, _, _, _ = (
+                fuzz.cluster.cmeans(
+                    X.T,
+                    c=self.n_clusters,
+                    m=self.fuzzifier,
+                    error=self.tol,
+                    maxiter=self.max_iter,
+                    metric=self.metric,
+                    init=self.init,
+                    seed=self.random_state,
+                )
             )
         else:
             self.membership_degree, _, _, _, _, _ = fuzz.cluster.cmeans_predict(
@@ -1146,7 +1156,9 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
             maxiter=self.max_iter,
         )
         # prob = compute_posterior(membership_degree_pred, self.p_hat, prior, self.loss_function)
-        prob = compute_prob(self.membership_degree, membership_degree_pred, self.p_hat, prior)
+        prob = compute_prob(
+            self.membership_degree, membership_degree_pred, self.p_hat, prior
+        )
         return prob
 
     # def _predict_profiles(self, X, prior):
@@ -1160,8 +1172,11 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
             error=self.tol,
             maxiter=self.max_iter,
         )
-        risk = compute_b_risk(membership_degree_pred, self.p_hat, prior, self.loss_function)
+        risk = compute_b_risk(
+            membership_degree_pred, self.p_hat, prior, self.loss_function
+        )
         return self.label_encoder.inverse_transform(np.argmin(risk, axis=1))
+
     # def _predict_profiles(self, X, prior):
     #     prob = self._predict_probabilities(X, prior)
     #     # 对每一行样本，根据概率分布随机选择一个类别
@@ -1249,19 +1264,56 @@ class CmeansDiscreteBayesianClassifier(_CmeansDiscretization):
         )
         self.prior_attribute = "prior"
 
-    def em(self, X_target,y_source):
-        membership_degree_target, _, _, _, _, _ = fuzz.cluster.cmeans_predict(
-            X_target.T,
-            cntr_trained=self.cluster_centers,
-            m=self.fuzzifier,
-            error=self.tol,
-            maxiter=self.max_iter,
-        )
-        posterior_iter = compute_prob(self.membership_degree, membership_degree_target, self.p_hat, self.prior)
-        for i in range(100):
-            prior_iter = np.sum(posterior_iter, axis=0) / posterior_iter.shape[0]
-            p_hat_iter = compute_p_hat_with_soft_labels(np.concatenate((self.membership_degree, membership_degree_target), axis=1), np.concatenate((np.eye(len(self.prior))[y_source], posterior_iter), axis=0))
-
-            posterior_iter = compute_prob(self.membership_degree, membership_degree_target, p_hat_iter, prior_iter)
-        return posterior_iter, p_hat_iter, prior_iter
-
+    # def em(self, X_source, X_target, y_source):
+    #     n_source = len(y_source)
+    #     n_target = X_target.shape[0]
+    #     alpha = n_source / (n_source + n_target)
+    #     membership_degree_target, _, _, _, _, _ = fuzz.cluster.cmeans_predict(
+    #         X_target.T,
+    #         cntr_trained=self.cluster_centers,
+    #         m=self.fuzzifier,
+    #         error=self.tol,
+    #         maxiter=self.max_iter,
+    #     )
+    #     posterior_iter_source = compute_prob(
+    #         self.membership_degree, self.membership_degree, self.p_hat, self.prior
+    #     )
+    #     posterior_iter_target = compute_prob(
+    #         self.membership_degree, membership_degree_target, self.p_hat, self.prior
+    #     )
+    #     for i in range(100):
+    #         prior_iter = (
+    #             alpha
+    #             * np.sum(posterior_iter_source, axis=0)
+    #             / posterior_iter_source.shape[0]
+    #         ) + (
+    #             (1 - alpha)
+    #             * np.sum(posterior_iter_target, axis=0)
+    #             / posterior_iter_target.shape[0]
+    #         )
+    #         p_hat_iter = (
+    #             alpha
+    #             * (
+    #                 np.sum(posterior_iter_source, axis=0)
+    #                 / posterior_iter_source.shape[0]
+    #             )[:, np.newaxis]
+    #             * compute_p_hat_with_soft_labels(
+    #                 self.membership_degree, posterior_iter_source
+    #             )
+    #         ) + (
+    #             (1 - alpha)
+    #             * (
+    #                 np.sum(posterior_iter_target, axis=0)
+    #                 / posterior_iter_target.shape[0]
+    #             )[:, np.newaxis]
+    #             * compute_p_hat_with_soft_labels(
+    #                 membership_degree_target, posterior_iter_target
+    #             )
+    #         )
+    #         posterior_iter_source = compute_prob(
+    #             self.membership_degree, self.membership_degree, p_hat_iter, prior_iter
+    #         )
+    #         posterior_iter_target = compute_prob(
+    #             self.membership_degree, membership_degree_target, p_hat_iter, prior_iter
+    #         )
+    #     return posterior_iter_target, p_hat_iter, prior_iter
