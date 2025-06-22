@@ -588,8 +588,9 @@ def compute_SPDBC_class_conditional_risk(X, y, class_index, loss_function, p_hat
         membership = membership_degree.T[i]  # (T,)
 
         # 计算 weighted sum，先做广播相乘，再在特征T维度求和
-        temp = M * membership[None, None, :]  # (K, K, T)
-        lambd = temp.sum(axis=2).sum(axis=0)  # (K,)
+        # temp = M * membership[None, None, :]  # (K, K, T)
+        # lambd = temp.sum(axis=2).sum(axis=0)  # (K,)
+        lambd = np.einsum('ijk,k->j', M, membership)
 
         # 找到lambd最小值对应的类别l_min
         l_min = np.argmin(lambd)
@@ -651,11 +652,11 @@ def compute_SPDBC_pi_star(X, y, loss_function, p_hat, membership_degree, pi,
         global_risk = np.dot(pi, class_conditional_risk)
         G = class_conditional_risk - global_risk
 
-        grad_norm = np.linalg.norm(G)
-        risk_history.append(grad_norm)
+        grad = np.sum(G**2)
+        risk_history.append(grad)
 
         # 判断收敛
-        if grad_norm < eps:
+        if grad < eps:
             break
 
         # 更新动量项
@@ -663,7 +664,7 @@ def compute_SPDBC_pi_star(X, y, loss_function, p_hat, membership_degree, pi,
 
         # 步长和归一化因子
         gamma = alpha / n
-        eta = max(1.0, np.linalg.norm(v))  # 用动量向量v代替G
+        eta = max(1.0, np.sum(v**2))  # 用动量向量v代替G
 
         # 使用带动量的方向更新 pi
         w = pi + (gamma / eta) * v

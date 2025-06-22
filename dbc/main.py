@@ -18,6 +18,7 @@ from dbc.utils import (
     compute_p_hat_with_degree,
     compute_prob,
     compute_b_risk,
+    compute_SPDBC_pi_star,
     # compute_p_hat_with_soft_labels
 )
 
@@ -53,7 +54,7 @@ class BaseDiscreteBayesianClassifier(BaseEstimator):
         self.prior_attribute = None
         self.prior = None
         self.p_hat = None
-        self.label_encoder = None
+        self.label_encoder = LabelEncoder()
         self.loss_function = None
 
     def fit(self, X, y, loss_function="01"):
@@ -81,13 +82,12 @@ class BaseDiscreteBayesianClassifier(BaseEstimator):
         self : object
             Fitted estimator.
         """
-        n_classes = len(set(y))
+        y_encoded = self.label_encoder.fit_transform(y)
+        n_classes = len(set(y_encoded))
         if loss_function == "01":
             self.loss_function = np.ones((n_classes, n_classes)) - np.eye(n_classes)
         else:
             raise ValueError("Invalid loss_function")
-        self.label_encoder = LabelEncoder()
-        y_encoded = self.label_encoder.fit_transform(y)
         self.prior = compute_prior(y_encoded, n_classes)
         self._fit_discretization(X, y_encoded, n_classes)
 
@@ -113,7 +113,9 @@ class BaseDiscreteBayesianClassifier(BaseEstimator):
         check_is_fitted(self, ["p_hat", self.prior_attribute])
         if prior_pred is None:
             prior_pred = getattr(self, self.prior_attribute)
-        labels = self._predict_profiles(X, prior_pred)
+        labels = self.label_encoder.inverse_transform(
+            self._predict_profiles(X, prior_pred)
+        )
         return labels
 
     def predict_prob(self, X, prior_pred=None):
@@ -243,11 +245,8 @@ class _KmeansDiscretization(BaseDiscreteBayesianClassifier, KMeans):
         provide the predicted class labels.
         """
         discrete_profiles = self._transform_to_discrete_profiles(X)
-        return self.label_encoder.inverse_transform(
-            predict_profile_label(prior, self.p_hat, self.loss_function)[
-                discrete_profiles
-            ]
-        )
+        return predict_profile_label(prior, self.p_hat, self.loss_function)[discrete_profiles]
+
 
     def _predict_probabilities(self, X, prior):
         """
@@ -654,11 +653,7 @@ class _DecisionTreeDiscretization(
         class labels.
         """
         discrete_profiles = self._transform_to_discrete_profiles(X)
-        return self.label_encoder.inverse_transform(
-            predict_profile_label(prior, self.p_hat, self.loss_function)[
-                discrete_profiles
-            ]
-        )
+        return predict_profile_label(prior, self.p_hat, self.loss_function)[discrete_profiles]
 
     def _predict_probabilities(self, X, prior):
         """
@@ -1145,6 +1140,10 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
                 seed=self.random_state,
             )
         self.p_hat = compute_p_hat_with_degree(self.membership_degree, y, n_classes)
+        if self.prior_attribute == "prior_star":
+            self.prior_star = compute_SPDBC_pi_star(
+                X, y, self.loss_function, self.p_hat, self.membership_degree, self.prior, alpha=2
+            )
 
     def _predict_probabilities(self, X, prior):
 
@@ -1163,7 +1162,7 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
 
     # def _predict_profiles(self, X, prior):
     #     prob = self._predict_probabilities(X, prior)
-    #     return self.label_encoder.inverse_transform(np.argmax(prob, axis=1))
+    #     return np.argmax(prob, axis=1)
     def _predict_profiles(self, X, prior):
         membership_degree_pred, _, _, _, _, _ = fuzz.cluster.cmeans_predict(
             X.T,
@@ -1175,7 +1174,7 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
         risk = compute_b_risk(
             membership_degree_pred, self.p_hat, prior, self.loss_function
         )
-        return self.label_encoder.inverse_transform(np.argmin(risk, axis=1))
+        return np.argmin(risk, axis=1)
 
     # def _predict_profiles(self, X, prior):
     #     prob = self._predict_probabilities(X, prior)
@@ -1184,7 +1183,7 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
     #         np.random.choice(len(p), p=p)
     #         for p in prob
     #     ])
-    #     return self.label_encoder.inverse_transform(predictions)
+    #     return predictions
 
 
 class CmeansDiscreteBayesianClassifier(_CmeansDiscretization):
@@ -1317,3 +1316,81 @@ class CmeansDiscreteBayesianClassifier(_CmeansDiscretization):
     #             self.membership_degree, membership_degree_target, p_hat_iter, prior_iter
     #         )
     #     return posterior_iter_target, p_hat_iter, prior_iter
+
+
+class CmeansDiscreteMinmaxClassifier(_CmeansDiscretization):
+    """
+    A discrete Bayesian classifier base on Fuzzy C-Means partitioning, all parameters are
+    inherited from the fuzz.cluster.cmeans() function.
+
+    Parameters
+    ----------
+    n_clusters : int
+        Desired number of clusters or classes.
+
+    fuzzifier : float
+        The degree of fuzziness of membership determines the influence of the cluster
+        center on the membership of the data point. Should be greater than 1.
+
+    tol : float
+        Stopping criterion; stop early if the norm of (u[p] - u[p-1]) < error
+        .
+    max_iter : int
+        Maximum number of iterations allowed.
+
+    metric: string
+        By default is set to Euclidean. Passes any option accepted by
+        ``scipy.spatial.distance.cdist``.
+
+    init : ndarray of shape (n_clusters, n_samples)
+        Initial fuzzy c-partitioned matrix. If none provided, algorithm is
+        randomly initialized.
+
+    random_state : int
+        If provided, sets random seed of init. No effect if init is
+        provided. Mainly for debug/testing purposes.
+
+    Attributes
+    ----------
+    prior: ndarray of shape (n_classes,)
+        Estimated prior probabilities for each class.
+
+    loss_function: ndarray of shape (n_classes, n_classes)
+        A matrix of loss function values for each class.
+
+    p_hat: ndarray of shape (n_classes, n_clusters)
+        Estimated probabilities for each class label in different profiles.
+
+    prior_attribute: {'prior', 'prior_star'} str
+        The attribute used to store prior probabilities. In Discrete Bayesian
+        classifier it will be 'prior' and in Discrete Minimax classifier it will
+        be 'prior_star'.
+
+    cluster_centers : ndarray of shape (n_clusters, n_features)
+        Coordinates of cluster centers.
+    """
+
+    def __init__(
+        self,
+        n_clusters=8,
+        fuzzifier=1.5,
+        *,
+        tol=1e-4,
+        max_iter=300,
+        init=None,
+        cluster_centers=None,
+        metric="euclidean",
+        random_state=None,
+    ):
+        _CmeansDiscretization.__init__(
+            self,
+            n_clusters=n_clusters,
+            fuzzifier=fuzzifier,
+            tol=tol,
+            max_iter=max_iter,
+            init=init,
+            cluster_centers=cluster_centers,
+            metric=metric,
+            random_state=random_state,
+        )
+        self.prior_attribute = "prior_star"
