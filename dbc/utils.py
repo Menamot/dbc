@@ -288,7 +288,6 @@ def num2cell(a):
         return a
 
 
-
 def proj_onto_polyhedral_set(pi, Box, K):
     '''
     Parameters
@@ -382,7 +381,6 @@ def proj_onto_polyhedral_set(pi, Box, K):
     return piStar
 
 
-
 def proj_simplex_Condat(K, pi):
     """
     This function is inspired from the article: L.Condat, "Fast projection onto the simplex and the
@@ -438,7 +436,6 @@ def proj_onto_U(pi, Box, K):
         pi_new = proj_onto_polyhedral_set(pi, Box, K)
 
     return pi_new
-
 
 
 def compute_piStar(pHat, y_train, K, L, N, Box):
@@ -603,7 +600,7 @@ def compute_SPDBC_class_conditional_risk(X, y, class_index, loss_function, p_hat
 
 
 def compute_SPDBC_pi_star(X, y, loss_function, p_hat, membership_degree, pi,
-                          alpha=1, beta=0.9, n_iter=300, eps=1e-3, return_history=False):
+                          alpha=1, beta=0.5, n_iter=300, eps=5e-2, return_history=False):
     """
     优化SPDBC的先验概率pi，使用带动量的Projected Gradient Descent方法。
 
@@ -649,14 +646,18 @@ def compute_SPDBC_pi_star(X, y, loss_function, p_hat, membership_degree, pi,
             compute_SPDBC_class_conditional_risk(X, y, k, loss_function, p_hat, membership_degree, pi)
             for k in range(K)
         ])
-        global_risk = np.dot(pi, class_conditional_risk)
+
+        # global_risk = np.dot(pi, class_conditional_risk)
+        global_risk = np.mean(class_conditional_risk)
+
         G = class_conditional_risk - global_risk
 
-        grad = np.sum(G**2)
-        risk_history.append(grad)
+        # grad = np.sum(G**2)
 
+        max_gap = np.max(class_conditional_risk) - np.min(class_conditional_risk)
+        risk_history.append(max_gap)
         # 判断收敛
-        if grad < eps:
+        if max_gap < eps:
             break
 
         # 更新动量项

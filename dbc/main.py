@@ -1101,6 +1101,7 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
         cluster_centers,
         metric,
         random_state,
+        use_kmeans=False,
     ):
         BaseDiscreteBayesianClassifier.__init__(self)
         self.n_clusters = n_clusters
@@ -1112,10 +1113,31 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
         self.tol = tol
         self.metric = metric
         self.random_state = random_state
+        self.use_kmeans = use_kmeans
         self._validate_params()
 
     def _fit_discretization(self, X, y, n_classes):
-        if self.cluster_centers is None:
+        if self.use_kmeans:
+            self.discretization_model = KMeans(
+                n_clusters=self.n_clusters,
+                random_state=self.random_state,
+                max_iter=self.max_iter,
+                tol=self.tol,
+            )
+            self.discretization_model.fit(X)
+            self.cluster_centers = self.discretization_model.cluster_centers_
+            self.membership_degree, _, _, _, _, _ = fuzz.cluster.cmeans_predict(
+                X.T,
+                cntr_trained=self.cluster_centers,
+                m=self.fuzzifier,
+                error=self.tol,
+                maxiter=self.max_iter,
+                metric=self.metric,
+                init=self.init,
+                seed=self.random_state,
+            )
+            print("对对对")
+        elif self.cluster_centers is None:
             self.cluster_centers, self.membership_degree, _, _, _, _, _ = (
                 fuzz.cluster.cmeans(
                     X.T,
@@ -1381,6 +1403,7 @@ class CmeansDiscreteMinmaxClassifier(_CmeansDiscretization):
         cluster_centers=None,
         metric="euclidean",
         random_state=None,
+        use_kmeans=False,
     ):
         _CmeansDiscretization.__init__(
             self,
@@ -1392,5 +1415,6 @@ class CmeansDiscreteMinmaxClassifier(_CmeansDiscretization):
             cluster_centers=cluster_centers,
             metric=metric,
             random_state=random_state,
+            use_kmeans=use_kmeans,
         )
         self.prior_attribute = "prior_star"
