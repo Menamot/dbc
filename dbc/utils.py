@@ -600,7 +600,7 @@ def compute_SPDBC_class_conditional_risk(X, y, class_index, loss_function, p_hat
 
 
 def compute_SPDBC_pi_star(X, y, loss_function, p_hat, membership_degree, pi,
-                          alpha=1, beta=0.5, n_iter=300, eps=5e-2, return_history=False):
+                          alpha=1, beta=0.5, n_iter=300, eps=1e-2, return_history=False):
     """
     优化SPDBC的先验概率pi，使用带动量的Projected Gradient Descent方法。
 
