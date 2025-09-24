@@ -245,8 +245,9 @@ class _KmeansDiscretization(BaseDiscreteBayesianClassifier, KMeans):
         provide the predicted class labels.
         """
         discrete_profiles = self._transform_to_discrete_profiles(X)
-        return predict_profile_label(prior, self.p_hat, self.loss_function)[discrete_profiles]
-
+        return predict_profile_label(prior, self.p_hat, self.loss_function)[
+            discrete_profiles
+        ]
 
     def _predict_probabilities(self, X, prior):
         """
@@ -653,7 +654,9 @@ class _DecisionTreeDiscretization(
         class labels.
         """
         discrete_profiles = self._transform_to_discrete_profiles(X)
-        return predict_profile_label(prior, self.p_hat, self.loss_function)[discrete_profiles]
+        return predict_profile_label(prior, self.p_hat, self.loss_function)[
+            discrete_profiles
+        ]
 
     def _predict_probabilities(self, X, prior):
         """
@@ -1108,7 +1111,6 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
         self.fuzzifier = fuzzifier
         self.init = init
         self.cluster_centers = cluster_centers
-        self.membership_degree = None
         self.max_iter = max_iter
         self.tol = tol
         self.metric = metric
@@ -1136,7 +1138,6 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
                 init=self.init,
                 seed=self.random_state,
             )
-            print("对对对")
         elif self.cluster_centers is None:
             self.cluster_centers, self.membership_degree, _, _, _, _, _ = (
                 fuzz.cluster.cmeans(
@@ -1164,7 +1165,15 @@ class _CmeansDiscretization(BaseDiscreteBayesianClassifier):
         self.p_hat = compute_p_hat_with_degree(self.membership_degree, y, n_classes)
         if self.prior_attribute == "prior_star":
             self.prior_star = compute_SPDBC_pi_star(
-                X, y, self.loss_function, self.p_hat, self.membership_degree, self.prior, alpha=2
+                X,
+                y,
+                self.loss_function,
+                self.p_hat,
+                self.membership_degree,
+                self.prior,
+                alpha=2,
+                n_iter=300,
+                eps=1e-6,
             )
 
     def _predict_probabilities(self, X, prior):
@@ -1271,6 +1280,7 @@ class CmeansDiscreteBayesianClassifier(_CmeansDiscretization):
         cluster_centers=None,
         metric="euclidean",
         random_state=None,
+        use_kmeans=False,
     ):
         _CmeansDiscretization.__init__(
             self,
@@ -1282,6 +1292,7 @@ class CmeansDiscreteBayesianClassifier(_CmeansDiscretization):
             cluster_centers=cluster_centers,
             metric=metric,
             random_state=random_state,
+            use_kmeans=use_kmeans,
         )
         self.prior_attribute = "prior"
 
