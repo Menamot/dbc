@@ -8,6 +8,7 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.utils._param_validation import Interval, StrOptions
 from sklearn.utils.validation import check_is_fitted
+from torch.utils.data import TensorDataset, DataLoader
 
 from dbc.utils import (
     compute_piStar,
@@ -1428,4 +1429,226 @@ class CmeansDiscreteMinmaxClassifier(_CmeansDiscretization):
             random_state=random_state,
             use_kmeans=use_kmeans,
         )
+        self.prior_attribute = "prior_star"
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class DiscriminativeNN(nn.Module):
+    def __init__(self, input_dim,  num_profiles, num_classes, p_y, hidden_dim=64,):
+        super().__init__()
+
+        self.num_profiles = num_profiles
+        self.num_classes = num_classes
+        self.p_y = p_y
+        # Encoder
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, num_profiles)
+        )
+
+        # 使用 register_buffer 保持状态但不被训练
+        self.register_buffer("count_z_given_y", torch.zeros(num_profiles, num_classes))  # [T, K]
+
+    def update_profile_counts(self, q_z_given_x, y_true):
+        """
+        使用 soft assignment 更新 profile 频数表：
+        q_z_given_x: [B, T], y_true: [B]
+        """
+        with torch.no_grad():
+            # B, T = q_z_given_x.shape
+            K = self.num_classes
+            one_hot_y = F.one_hot(y_true, K).float()  # [B, K]
+            # outer product: for each sample, update count[z, y]
+            # Resulting shape: [B, T, K]
+            contrib = torch.einsum("bt,bk->btk", q_z_given_x, one_hot_y)
+            self.count_z_given_y += contrib.sum(dim=0)  # sum over batch
+
+    def compute_p_z_given_y(self):
+        # 避免除以 0：加入平滑
+        smoothed = self.count_z_given_y + 1e-3
+        return smoothed / smoothed.sum(dim=0, keepdim=True)  # [T, K]
+
+
+    def forward(self, x):
+        # q(Z|X)
+        profile_logits = self.encoder(x)
+        q_z_given_x = F.softmax(profile_logits, dim=1)  # [B, T]
+
+        # Profile 后验
+        p_z_given_y = self.compute_p_z_given_y()  # [T, K]
+
+        # 归一化（每行归一）
+        p_z = (p_z_given_y * self.p_y.unsqueeze(0)).sum(dim=1)  # shape [T]
+
+        # 构造完整贝叶斯项：P(Z|Y)*P(Y) / P(Z)
+        bayes_matrix = (p_z_given_y * self.p_y.unsqueeze(0)) / (p_z.unsqueeze(1) + 1e-9)  # [T, K]
+
+        # 推理公式：P(Y|X) = sum_z P(Y|Z=z) * P(Z=z|X)
+        p_y_given_x = q_z_given_x @ bayes_matrix  # shape [B, K]
+        return p_y_given_x, q_z_given_x, p_z_given_y
+
+    def predict(self, x):
+        p_y_given_x, _, _ = self.forward(x)
+        return p_y_given_x
+
+def profile_entropy_regularization(q_z_given_x):
+        avg_profile = q_z_given_x.mean(dim=0) + 1e-9
+        return -torch.sum(avg_profile * avg_profile.log())
+
+def profile_kl_regularization(q_z_given_x):
+    avg_profile = q_z_given_x.mean(dim=0) + 1e-9
+    log_avg = avg_profile.log()
+    log_uniform = torch.full_like(log_avg, fill_value=torch.log(torch.tensor(1.0 / len(avg_profile))))
+    return torch.sum(avg_profile * (log_avg - log_uniform))
+
+class _DiscriminativeNNDiscretization(BaseDiscreteBayesianClassifier):
+
+    def __init__(
+        self, n_clusters, *, tol, max_iter, random_state, n_epochs, batch_size, kl_regularization,
+    ):
+        BaseDiscreteBayesianClassifier.__init__(self)
+        self.n_clusters = n_clusters
+        self.max_iter = max_iter
+        self.tol = tol
+        self.random_state = random_state
+        self.n_epochs = n_epochs
+        self.batch_size= batch_size
+        self.kl_regularization = kl_regularization
+        self.random_state = random_state
+        # self._validate_params()
+
+    def _fit_discretization(self, X, y, n_classes):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        input_dim = X.shape[1]
+        hidden_dim = 64
+        p_y = torch.tensor(compute_prior(y, n_classes), dtype=torch.float32).to(device)
+        self.discretization_model = DiscriminativeNN(
+            input_dim,
+            self.n_clusters,  # num_profiles
+            n_classes,  # num_classes
+            p_y,  # p_y
+            hidden_dim,  # hidden_dim
+        )
+        optimizer = torch.optim.Adam(self.discretization_model.parameters(), lr=1e-3)
+        criterion = nn.CrossEntropyLoss()
+
+        self.discretization_model.to(device)
+        X = torch.tensor(X, dtype=torch.float32).to(device)
+        y = torch.tensor(y, dtype=torch.long).to(device)
+        dataset = TensorDataset(X, y)
+        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+        for epoch in range(self.n_epochs):
+            self.discretization_model.train()
+            for X_batch, y_batch in loader:
+                optimizer.zero_grad()
+                p_y_given_x, q_z_given_x, _ = self.discretization_model(X_batch)
+                self.discretization_model.update_profile_counts(q_z_given_x, y_batch)
+                loss = criterion(
+                    p_y_given_x, y_batch
+                ) + self.kl_regularization * profile_kl_regularization(q_z_given_x)
+                loss.backward()
+                optimizer.step()
+
+        self.discretization_model.eval()
+        p_y.to("cpu")
+        self.discretization_model.to("cpu")
+        X.to("cpu")
+        y.to("cpu")
+        self.membership_degree = self.discretization_model(X)[1].cpu().detach().numpy().T
+        self.p_hat = compute_p_hat_with_degree(self.membership_degree, y.numpy(), n_classes)
+        if self.prior_attribute == "prior_star":
+            self.prior_star = compute_SPDBC_pi_star(
+                X.detach().numpy(),
+                y.detach().numpy(),
+                self.loss_function,
+                self.p_hat,
+                self.membership_degree,
+                self.prior,
+                alpha=2,
+                n_iter=300,
+                eps=1e-6,
+            )
+    def _predict_probabilities(self, X, prior):
+        device = next(self.discretization_model.parameters()).device
+        X_tensor = torch.tensor(X, dtype=torch.float32, device=device)
+        with torch.no_grad():
+            membership_degree_pred = (
+                self.discretization_model(X_tensor)[1].cpu().numpy().T
+            )
+        # prob = compute_posterior(membership_degree_pred, self.p_hat, prior, self.loss_function)
+        prob = compute_prob(
+            self.membership_degree, membership_degree_pred, self.p_hat, prior
+        )
+        return prob
+
+    def _predict_profiles(self, X, prior):
+        device = next(self.discretization_model.parameters()).device
+        X_tensor = torch.tensor(X, dtype=torch.float32, device=device)
+        with torch.no_grad():
+            membership_degree_pred = (
+                self.discretization_model(X_tensor)[1].cpu().numpy().T
+            )
+        risk = compute_b_risk(
+            membership_degree_pred, self.p_hat, prior, self.loss_function
+        )
+        return np.argmin(risk, axis=1)
+
+
+class DiscriminativeDiscreteBayesianClassifier(_DiscriminativeNNDiscretization):
+
+    def __init__(
+        self,
+        n_clusters=8,
+        *,
+        tol=1e-4,
+        max_iter=300,
+        n_epochs=100,
+        batch_size=128,
+        kl_regularization=0.1,
+        random_state=None,
+    ):
+        _DiscriminativeNNDiscretization.__init__(
+            self,
+            n_clusters = n_clusters,
+            max_iter = max_iter,
+            tol = tol,
+            random_state = random_state,
+            n_epochs = n_epochs,
+            batch_size=batch_size,
+            kl_regularization = kl_regularization,
+        )
+        self.prior_attribute = "prior"
+
+
+class DiscriminativeMinmaxClassifier(_DiscriminativeNNDiscretization):
+
+    def __init__(
+        self,
+        n_clusters=8,
+        *,
+        tol=1e-4,
+        max_iter=300,
+        n_epochs=100,
+        batch_size=128,
+        kl_regularization=0.1,
+        random_state=None,
+    ):
+        _DiscriminativeNNDiscretization.__init__(
+            self,
+            n_clusters=n_clusters,
+            max_iter=max_iter,
+            tol=tol,
+            random_state=random_state,
+            n_epochs=n_epochs,
+            batch_size=batch_size,
+            kl_regularization=kl_regularization,
+        )
+        self.prior_attribute = "prior"
         self.prior_attribute = "prior_star"
