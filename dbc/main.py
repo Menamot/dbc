@@ -157,6 +157,58 @@ class BaseDiscreteBayesianClassifier(BaseEstimator):
         raise NotImplementedError
 
 
+class ClasswiseKMeans:
+    def __init__(self, n_clusters_per_class=3, random_state=None):
+        """
+        n_clusters_per_class: int 或 dict
+            若为 int，则所有类别使用相同的簇数；
+            若为 dict，则每个类别单独指定簇数，如 {0:3, 1:5}
+        """
+        self.n_clusters_per_class = n_clusters_per_class
+        self.random_state = random_state
+        self.centers_ = None
+        self.center_labels_ = None
+        self.labels_ = None
+        self.n_clusters = None
+
+    def fit(self, X, y):
+        classes = np.unique(y)
+        centers = []
+        center_labels = []
+
+        for c in classes:
+            Xc = X[y == c]
+            # 若 n_clusters_per_class 是 dict，则取对应的簇数
+            if isinstance(self.n_clusters_per_class, dict):
+                k = self.n_clusters_per_class.get(c, 3)
+            else:
+                k = self.n_clusters_per_class
+
+            kmeans = KMeans(n_clusters=k, random_state=self.random_state)
+            kmeans.fit(Xc)
+
+            centers.append(kmeans.cluster_centers_)
+            center_labels.extend([c] * k)
+
+        # 合并所有类别的簇中心
+        self.centers_ = np.vstack(centers)
+        self.center_labels_ = np.array(center_labels)
+        self.n_clusters = len(self.centers_)
+
+        # 🔁 重新计算所有样本的最近簇编号（全局一致）
+        dists = np.linalg.norm(X[:, None, :] - self.centers_[None, :, :], axis=2)
+        self.labels_ = np.argmin(dists, axis=1)
+
+        return self
+
+    def predict(self, X):
+        # 计算每个样本到所有簇中心的欧氏距离
+        dists = np.linalg.norm(X[:, None, :] - self.centers_[None, :, :], axis=2)
+        # 最近中心的全局簇编号
+        nearest_idx = np.argmin(dists, axis=1)
+        return nearest_idx
+
+
 class _KmeansDiscretization(BaseDiscreteBayesianClassifier, KMeans):
     """
     Handles the discretization of continuous features for DBC and DMC
@@ -183,21 +235,31 @@ class _KmeansDiscretization(BaseDiscreteBayesianClassifier, KMeans):
         copy_x,
         algorithm,
         box,
+        classes_wise,
     ):
-        KMeans.__init__(
-            self,
-            n_clusters=n_clusters,
-            init=init,
-            n_init=n_init,
-            max_iter=max_iter,
-            tol=tol,
-            verbose=verbose,
-            random_state=random_state,
-            copy_x=copy_x,
-            algorithm=algorithm,
-        )
-        self.box = box
-        BaseDiscreteBayesianClassifier.__init__(self)
+        self.classes_wise = classes_wise
+        if classes_wise is False:
+            KMeans.__init__(
+                self,
+                n_clusters=n_clusters,
+                init=init,
+                n_init=n_init,
+                max_iter=max_iter,
+                tol=tol,
+                verbose=verbose,
+                random_state=random_state,
+                copy_x=copy_x,
+                algorithm=algorithm,
+            )
+            self.box = box
+            BaseDiscreteBayesianClassifier.__init__(self)
+        else:
+            ClasswiseKMeans.__init__(
+                self, n_clusters_per_class=n_clusters, random_state=random_state
+            )
+            self.box = box
+
+            BaseDiscreteBayesianClassifier.__init__(self)
 
     def _fit_discretization(self, X, y, n_classes):
         """
@@ -208,25 +270,40 @@ class _KmeansDiscretization(BaseDiscreteBayesianClassifier, KMeans):
         in different profiles. If prior_attribute is 'prior_star', it also computes
         prior_star, the best prior probability that minimizes the maximum class risk.
         """
-        self.discretization_model = KMeans(
-            n_clusters=self.n_clusters,
-            init=self.init,
-            n_init=self.n_init,
-            max_iter=self.max_iter,
-            tol=self.tol,
-            verbose=self.verbose,
-            random_state=self.random_state,
-            copy_x=self.copy_x,
-            algorithm=self.algorithm,
-        )
-        self.discretization_model.fit(X)
-        self.cluster_centers = self.discretization_model.cluster_centers_
-        self.p_hat = compute_p_hat(
-            self.discretization_model.labels_,
-            y,
-            n_classes,
-            self.discretization_model.n_clusters,
-        )
+
+        if self.classes_wise is False:
+            self.discretization_model = KMeans(
+                n_clusters=self.n_clusters,
+                init=self.init,
+                n_init=self.n_init,
+                max_iter=self.max_iter,
+                tol=self.tol,
+                verbose=self.verbose,
+                random_state=self.random_state,
+                copy_x=self.copy_x,
+                algorithm=self.algorithm,
+            )
+            self.discretization_model.fit(X)
+            self.cluster_centers = self.discretization_model.cluster_centers_
+            self.p_hat = compute_p_hat(
+                self.discretization_model.labels_,
+                y,
+                n_classes,
+                self.discretization_model.n_clusters,
+            )
+        else:
+            self.discretization_model = ClasswiseKMeans(
+                n_clusters_per_class=self.n_clusters_per_class,
+                random_state=self.random_state,
+            )
+            self.discretization_model.fit(X, y)
+            self.cluster_centers = self.discretization_model.centers_
+            self.p_hat = compute_p_hat(
+                self.discretization_model.labels_,
+                y,
+                n_classes,
+                self.discretization_model.n_clusters,
+            )
         if self.prior_attribute == "prior_star":
             self.prior_star = compute_piStar(
                 self.p_hat, y, n_classes, self.loss_function, 1000, self.box
@@ -255,7 +332,8 @@ class _KmeansDiscretization(BaseDiscreteBayesianClassifier, KMeans):
         Compute probabilities for each class based on input features and prior
         """
         class_risk = (prior.reshape(-1, 1) * self.loss_function).T @ self.p_hat
-        prob = 1 - (class_risk / np.sum(class_risk, axis=0))
+        prob = 1 / (class_risk + 1e-6)
+        prob /= np.sum(prob, axis=0, keepdims=True)
         return prob[:, self._transform_to_discrete_profiles(X)].T
 
 
@@ -386,6 +464,7 @@ class KmeansDiscreteBayesianClassifier(_KmeansDiscretization):
         random_state=None,
         copy_x=True,
         algorithm="lloyd",
+        classes_wise=False,
     ):
         _KmeansDiscretization.__init__(
             self,
@@ -399,11 +478,12 @@ class KmeansDiscreteBayesianClassifier(_KmeansDiscretization):
             copy_x=copy_x,
             algorithm=algorithm,
             box=None,
+            classes_wise=classes_wise,
         )
         self.prior_attribute = "prior"
 
 
-class KmeansDiscreteMinimaxClassifier(_KmeansDiscretization):
+class KmeansDiscreteMinmaxClassifier(_KmeansDiscretization):
     """
     A discrete Minimax classifier base on K-Means partitioning, all parameters are inherited from the KMeans.
 
@@ -534,6 +614,7 @@ class KmeansDiscreteMinimaxClassifier(_KmeansDiscretization):
         copy_x=True,
         algorithm="lloyd",
         box=None,
+        classes_wise=False,
     ):
         _KmeansDiscretization.__init__(
             self,
@@ -547,6 +628,7 @@ class KmeansDiscreteMinimaxClassifier(_KmeansDiscretization):
             copy_x=copy_x,
             algorithm=algorithm,
             box=box,
+            classes_wise=classes_wise,
         )
         self.prior_attribute = "prior_star"
 
@@ -1431,12 +1513,22 @@ class CmeansDiscreteMinmaxClassifier(_CmeansDiscretization):
         )
         self.prior_attribute = "prior_star"
 
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class DiscriminativeNN(nn.Module):
-    def __init__(self, input_dim,  num_profiles, num_classes, p_y, hidden_dim=64,):
+
+    def __init__(
+        self,
+        input_dim,
+        hidden_dim,
+        num_profiles,
+        num_classes,
+        p_y,
+    ):
         super().__init__()
 
         self.num_profiles = num_profiles
@@ -1450,11 +1542,13 @@ class DiscriminativeNN(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, num_profiles)
+            nn.Linear(hidden_dim, num_profiles),
         )
 
         # 使用 register_buffer 保持状态但不被训练
-        self.register_buffer("count_z_given_y", torch.zeros(num_profiles, num_classes))  # [T, K]
+        self.register_buffer(
+            "count_z_given_y", torch.zeros(num_profiles, num_classes)
+        )  # [T, K]
 
     def update_profile_counts(self, q_z_given_x, y_true):
         """
@@ -1475,7 +1569,6 @@ class DiscriminativeNN(nn.Module):
         smoothed = self.count_z_given_y + 1e-3
         return smoothed / smoothed.sum(dim=0, keepdim=True)  # [T, K]
 
-
     def forward(self, x):
         # q(Z|X)
         profile_logits = self.encoder(x)
@@ -1488,7 +1581,9 @@ class DiscriminativeNN(nn.Module):
         p_z = (p_z_given_y * self.p_y.unsqueeze(0)).sum(dim=1)  # shape [T]
 
         # 构造完整贝叶斯项：P(Z|Y)*P(Y) / P(Z)
-        bayes_matrix = (p_z_given_y * self.p_y.unsqueeze(0)) / (p_z.unsqueeze(1) + 1e-9)  # [T, K]
+        bayes_matrix = (p_z_given_y * self.p_y.unsqueeze(0)) / (
+            p_z.unsqueeze(1) + 1e-9
+        )  # [T, K]
 
         # 推理公式：P(Y|X) = sum_z P(Y|Z=z) * P(Z=z|X)
         p_y_given_x = q_z_given_x @ bayes_matrix  # shape [B, K]
@@ -1498,20 +1593,33 @@ class DiscriminativeNN(nn.Module):
         p_y_given_x, _, _ = self.forward(x)
         return p_y_given_x
 
+
 def profile_entropy_regularization(q_z_given_x):
-        avg_profile = q_z_given_x.mean(dim=0) + 1e-9
-        return -torch.sum(avg_profile * avg_profile.log())
+    avg_profile = q_z_given_x.mean(dim=0) + 1e-9
+    return -torch.sum(avg_profile * avg_profile.log())
+
 
 def profile_kl_regularization(q_z_given_x):
     avg_profile = q_z_given_x.mean(dim=0) + 1e-9
     log_avg = avg_profile.log()
-    log_uniform = torch.full_like(log_avg, fill_value=torch.log(torch.tensor(1.0 / len(avg_profile))))
+    log_uniform = torch.full_like(
+        log_avg, fill_value=torch.log(torch.tensor(1.0 / len(avg_profile)))
+    )
     return torch.sum(avg_profile * (log_avg - log_uniform))
+
 
 class _DiscriminativeNNDiscretization(BaseDiscreteBayesianClassifier):
 
     def __init__(
-        self, n_clusters, *, tol, max_iter, random_state, n_epochs, batch_size, kl_regularization,
+        self,
+        n_clusters,
+        *,
+        tol,
+        max_iter,
+        random_state,
+        n_epochs,
+        batch_size,
+        kl_regularization,
     ):
         BaseDiscreteBayesianClassifier.__init__(self)
         self.n_clusters = n_clusters
@@ -1519,32 +1627,31 @@ class _DiscriminativeNNDiscretization(BaseDiscreteBayesianClassifier):
         self.tol = tol
         self.random_state = random_state
         self.n_epochs = n_epochs
-        self.batch_size= batch_size
+        self.batch_size = batch_size
         self.kl_regularization = kl_regularization
         self.random_state = random_state
         # self._validate_params()
 
     def _fit_discretization(self, X, y, n_classes):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         input_dim = X.shape[1]
         hidden_dim = 64
-        p_y = torch.tensor(compute_prior(y, n_classes), dtype=torch.float32).to(device)
+        p_y = torch.tensor(compute_prior(y, n_classes), dtype=torch.float32)
         self.discretization_model = DiscriminativeNN(
             input_dim,
+            hidden_dim,  # hidden_dim
             self.n_clusters,  # num_profiles
             n_classes,  # num_classes
             p_y,  # p_y
-            hidden_dim,  # hidden_dim
         )
         optimizer = torch.optim.Adam(self.discretization_model.parameters(), lr=1e-3)
         criterion = nn.CrossEntropyLoss()
 
-        self.discretization_model.to(device)
-        X = torch.tensor(X, dtype=torch.float32).to(device)
-        y = torch.tensor(y, dtype=torch.long).to(device)
-        dataset = TensorDataset(X, y)
+        X_tensor = torch.tensor(X, dtype=torch.float32)
+        y_tensor = torch.tensor(y, dtype=torch.long)
+        dataset = TensorDataset(X_tensor, y_tensor)
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
         for epoch in range(self.n_epochs):
+            # 训练阶段
             self.discretization_model.train()
             for X_batch, y_batch in loader:
                 optimizer.zero_grad()
@@ -1557,16 +1664,13 @@ class _DiscriminativeNNDiscretization(BaseDiscreteBayesianClassifier):
                 optimizer.step()
 
         self.discretization_model.eval()
-        p_y.to("cpu")
-        self.discretization_model.to("cpu")
-        X.to("cpu")
-        y.to("cpu")
-        self.membership_degree = self.discretization_model(X)[1].cpu().detach().numpy().T
-        self.p_hat = compute_p_hat_with_degree(self.membership_degree, y.numpy(), n_classes)
+        with torch.no_grad():
+            self.membership_degree = self.discretization_model(X_tensor)[1].numpy().T
+        self.p_hat = compute_p_hat_with_degree(self.membership_degree, y, n_classes)
         if self.prior_attribute == "prior_star":
             self.prior_star = compute_SPDBC_pi_star(
-                X.detach().numpy(),
-                y.detach().numpy(),
+                X,
+                y,
                 self.loss_function,
                 self.p_hat,
                 self.membership_degree,
@@ -1575,14 +1679,12 @@ class _DiscriminativeNNDiscretization(BaseDiscreteBayesianClassifier):
                 n_iter=300,
                 eps=1e-6,
             )
+
     def _predict_probabilities(self, X, prior):
         device = next(self.discretization_model.parameters()).device
         X_tensor = torch.tensor(X, dtype=torch.float32, device=device)
         with torch.no_grad():
-            membership_degree_pred = (
-                self.discretization_model(X_tensor)[1].cpu().numpy().T
-            )
-        # prob = compute_posterior(membership_degree_pred, self.p_hat, prior, self.loss_function)
+            membership_degree_pred = self.discretization_model(X_tensor)[1].numpy().T
         prob = compute_prob(
             self.membership_degree, membership_degree_pred, self.p_hat, prior
         )
@@ -1616,13 +1718,13 @@ class DiscriminativeDiscreteBayesianClassifier(_DiscriminativeNNDiscretization):
     ):
         _DiscriminativeNNDiscretization.__init__(
             self,
-            n_clusters = n_clusters,
-            max_iter = max_iter,
-            tol = tol,
-            random_state = random_state,
-            n_epochs = n_epochs,
+            n_clusters=n_clusters,
+            max_iter=max_iter,
+            tol=tol,
+            random_state=random_state,
+            n_epochs=n_epochs,
             batch_size=batch_size,
-            kl_regularization = kl_regularization,
+            kl_regularization=kl_regularization,
         )
         self.prior_attribute = "prior"
 
@@ -1650,5 +1752,29 @@ class DiscriminativeMinmaxClassifier(_DiscriminativeNNDiscretization):
             batch_size=batch_size,
             kl_regularization=kl_regularization,
         )
-        self.prior_attribute = "prior"
         self.prior_attribute = "prior_star"
+
+
+class _GenerativeDiscreteBayesianClassifier(BaseDiscreteBayesianClassifier):
+    def __init__(
+        self,
+        n_clusters,
+        *,
+        tol,
+        max_iter,
+        random_state,
+        n_epochs,
+        batch_size,
+    ):
+        BaseDiscreteBayesianClassifier.__init__(self)
+        self.n_clusters = n_clusters
+        self.max_iter = max_iter
+        self.tol = tol
+        self.random_state = random_state
+        self.n_epochs = n_epochs
+        self.batch_size = batch_size
+        self.random_state = random_state
+        # self._validate_params()
+
+    def _fit_discretization(self, X, y, n_classes):
+        input_dim = X.shape[1]
