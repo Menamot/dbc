@@ -1,5 +1,3 @@
-from .main import KmeansDiscreteBayesianClassifier, KmeansDiscreteMinimaxClassifier
-from .main import DecisionTreeDiscreteBayesianClassifier, DecisionTreeDiscreteMinimaxClassifier
-from .main import CmeansDiscreteBayesianClassifier
+from .utils import compute_class_conditional_risk_with_labels
 
-from .utils import compute_conditional_risk, compute_global_risk
+from .main import DiscreteBayesianClassifier
