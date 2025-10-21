@@ -5,8 +5,8 @@ with open("requirements.txt") as f:
 
 setup(
     name="dbc-menamot",
-    version="2.0.0",
-    description="A Python package for Discrete Bayesian and Minimax Classifiers",
+    version="2.0.1",
+    description="A Python package for Discrete Bayesian and Minmax Classifiers",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     author="Wenlong",
