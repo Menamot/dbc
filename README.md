@@ -1,18 +1,16 @@
 # Introduction
-This is a Python package that implement two kinds classes: `DiscreteBayesianClassifier` and 
-`DiscreteMinimaxClassifier`.
+This is a Python package that implement classes: `DiscreteBayesianClassifier`.
 
-`DiscreteBayesianClassifier` is a classification model that works by first partitioning the feature space into multiple
+Discrete Bayesian Classifier is a classification model that works by first partitioning the feature space into multiple
 small profiles using various discretization methods. It then implements Bayesian decision rule to get the result.
 
-`DiscreteMinimaxClassifier` is a classifier proposed by Cyprien Gilet and it base on `DiscreteBayesianClassifier`. By 
-calculating a best prior probability that minimize the maximum class conditional risk, `DiscreteMinimaxClassifier` can
-balance the risk of different classes, and also make it perform well in the face of imbalanced datasets. 
+Discrete Minmax Classifier is a classifier proposed by Cyprien Gilet and it base on Discrete Bayesian Classifier. By 
+calculating a best prior probability that minimize the maximum class conditional risk, it can balance the risk of 
+different classes, and also make it perform well in the face of imbalanced datasets. 
 
 ## Discretization Methods Implemented
-- **K-Means** : `KmeansDiscreteBayesianClassifier` and `KmeansDiscreteMinimaxClassifier`
-- **Decision Tree** : `DecisionTreeDiscreteBayesianClassifier` and `KmeansDiscreteMinimaxClassifier`
-- **Fuzzy C-Means** : `CmeansDiscreteBayesianClassifier`
+- **K-Means** : `KMeansDiscretizer` and `KMeansClasswiseDiscretizer`
+- **Fuzzy C-Means** : `CMeansDiscretizer` and `CMeansClasswiseDiscretizer`
 
 ## How to install
 
@@ -30,20 +28,25 @@ A notebook file is provided to give a example in examples folder. And below is a
 `KmeansDiscreteBayesianClassifier`:
 
 ```python
-from dbc.main import KmeansDiscreteBayesianClassifier
+import dbc
+from dbc.discretizers import *
 from sklearn.datasets import load_iris
 
 # Load dataset
 X, y = load_iris(return_X_y=True)
 
 # Create classifier instance
-clf = KmeansDiscreteBayesianClassifier(n_clusters=10)
+model = dbc.DiscreteBayesianClassifier(
+    discretizer=CMeansClasswiseDiscretizer(n_clusters_per_class=3, fuzzifier=1.5),
+    minmax=True,
+    minmax_eps = 1e-2,
+)
 
 # Fit model
-clf.fit(X, y)
+model.fit(X, y)
 
 # Predict
-y_pred = clf.predict(X)
+y_pred = model.predict(X)
 print(y_pred)
 ```
 
