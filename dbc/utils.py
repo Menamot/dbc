@@ -1,109 +1,47 @@
 import numpy as np
-from itertools import combinations
-
+import warnings
 from sklearn.metrics import confusion_matrix
 from sklearn.preprocessing import LabelEncoder
-from sklearn.tree import DecisionTreeClassifier
 
 
-def compute_p_hat(
-    profile_labels: np.ndarray, y: np.ndarray, n_classes: int, n_clusters: int
-):
-    """
-    Compute the probability estimates for each class and cluster. The function calculates the relative frequency of
-    each cluster label within each class and returns these probabilities as a matrix.
-
-    :param profile_labels: Array containing cluster labels for each sample.
-    :type profile_labels: np.ndarray
-    :param y: Array containing class labels for each sample.
-    :type y: np.ndarray
-    :param n_classes: Number of distinct classes.
-    :type n_classes: int
-    :param n_clusters: Number of distinct clusters.
-    :type n_clusters: int
-    :return: A matrix where each row represents a class and each column represents a cluster. Each entry contains the
-             probability estimate of the cluster for the respective class.
-    :rtype: np.ndarray
-    """
-    p_hat = np.zeros((n_classes, n_clusters))
-
+def compute_pz_given_y(membership, y):
+    n_classes = len(set(y))
+    n_clusters = membership.shape[0]
+    pz_given_y = np.zeros((n_classes, n_clusters))
     for k in range(n_classes):
         indices_of_class_k = np.where(y == k)[0]
-        nk = len(indices_of_class_k)
-        p_hat[k] = (
-            np.bincount(profile_labels[indices_of_class_k], minlength=n_clusters) / nk
+        nk = indices_of_class_k.size
+        for t in range(n_clusters):
+            pz_given_y[k, t] = np.sum(membership[t, indices_of_class_k]) / nk
+    return pz_given_y
+
+
+def compute_pz(p_hat, prior_train):
+    # P(Z)=\sum_k P(Z|Y) * P(Y)
+    pz = np.sum(prior_train.reshape(-1, 1) * p_hat, axis=0)
+    if np.min(pz) < 1e-12:
+        # 如果警告出现，代表有一个profile完全处于分布外，请检查
+        warnings.warn(
+            "Some components of P(Z) are extremely small (< 1e-12). "
+            "This may cause numerical instability in later computations.",
+            RuntimeWarning,
         )
-        # Count number of occurrences of each value in array of non-negative ints.
-    return p_hat
+    return pz
 
 
-def compute_prior(y: np.ndarray, n_classes: int):
-    """
-    Compute the prior probabilities for each class.
-
-    This function calculates the prior probabilities for each class k in the
-    range [0, n_classes-1]. It returns a numpy array where each element
-    represents the proportion of occurrences of the class in the input array y.
-
-    :param y: A numpy array of class labels.
-    :type y: np.ndarray
-    :param n_classes: Total number of unique classes.
-    :type n_classes: int
-    :return: A numpy array of prior probabilities.
-    :rtype: np.ndarray
-    """
-    pi = np.zeros(n_classes)
-    total_count = len(y)
+def compute_prior(y: np.ndarray):
+    n_classes = len(set(y))
+    prior = np.zeros(n_classes)
+    n_sample = len(y)
 
     for k in range(n_classes):
-        pi[k] = np.sum(y == k) / total_count
-    return pi
+        prior[k] = np.sum(y == k) / n_sample
+    return prior
 
 
-def predict_profile_label(prior, p_hat, loss_function):
-    """
-    Predict the profile label based on prior probabilities, the predicted
-    probabilities, and a loss function.
-
-    This function calculates the class risk using the provided prior
-    probabilities, predicted probabilities, and the loss function, and then
-    returns the label with the minimum risk.
-
-    :param prior: Array of prior probabilities for each class.
-    :type prior: np.ndarray
-    :param p_hat: Matrix of predicted probabilities for each class and instance.
-    :type p_hat: np.ndarray
-    :param loss_function: Matrix of loss values for each class combination.
-    :type loss_function: np.ndarray
-    :return: Array of predicted labels for each instance.
-    :rtype: np.ndarray
-    """
-    class_risk = (prior.reshape(-1, 1) * loss_function).T @ p_hat
-    l_predict = np.argmin(class_risk, axis=0)
-    return l_predict
-
-
-def compute_conditional_risk(
+def compute_class_conditional_risk_with_labels(
     y_true: np.ndarray, y_pred: np.ndarray, loss_function: np.ndarray = None
 ):
-    """
-    Computes the conditional risk and the normalized confusion matrix for given true labels,
-    predicted labels, and a loss function.
-
-    This function uses label encoding to transform string labels into integer codes. It then
-    calculates the confusion matrix and normalizes it. Finally, it computes the conditional
-    risk by multiplying the loss function with the normalized confusion matrix and summing the
-    resulting products.
-
-    :param y_true:
-        The true labels of the data as a NumPy array.
-    :param y_pred:
-        The predicted labels as a NumPy array.
-    :param loss_function:
-        A loss function represented as a NumPy array.
-    :return:
-        A tuple containing the conditional risk and the normalized confusion matrix.
-    """
     if loss_function is None:
         n_classes = len(set(y_true))
         loss_function = np.ones((n_classes, n_classes)) - np.eye(n_classes)
@@ -123,295 +61,169 @@ def compute_conditional_risk(
     return conditional_risk, confusion_matrix_normalized
 
 
-def compute_p_hat_soft(degree, y_soft, n_classes):
-    n_clusters = degree.shape[0]
-    p_hat = np.zeros((n_classes, n_clusters))
-
-    for k in range(n_classes):
-        # 使用每个样本属于类别k的概率
-        class_probs = y_soft[:, k]  # 获取第k类的概率
-
-        for t in range(n_clusters):
-            # 计算加权和
-            weighted_sum = np.sum(degree[t, :] * class_probs)
-            # 计算概率和
-            prob_sum = np.sum(class_probs)
-
-            if prob_sum > 0:
-                p_hat[k, t] = weighted_sum / prob_sum
-
-    return p_hat
-
-
-def compute_p_hat_with_soft_labels(degree, y):
-    """
-    degree: shape (n_clusters, n_samples)
-    y: shape (n_samples, n_classes), each row is a soft label or one-hot
-    returns: p_hat of shape (n_classes, n_clusters)
-    """
-    y_T = y.T  # shape (n_classes, n_samples)
-    sum_y = np.sum(y_T, axis=1, keepdims=True)  # shape (n_classes, 1)
-    # Avoid division by zero
-    sum_y[sum_y == 0] = 1
-    p_hat = (y_T @ degree.T) / sum_y  # shape (n_classes, n_clusters)
-    return p_hat
-
-
-def compute_p_hat_with_degree(degree, y, n_classes):
-    n_clusters = degree.shape[0]
-    p_hat = np.zeros((n_classes, n_clusters))
-    for k in range(n_classes):
-        indices_of_class_k = np.where(y == k)[0]
-        mk = indices_of_class_k.size
-        for t in range(n_clusters):
-            if mk > 0:
-                p_hat[k, t] = np.sum(degree[t, indices_of_class_k]) / mk
-    return p_hat
-
-
-# def compute_p_hat_with_degree(degree, y, n_classes):
-#     n_clusters = degree.shape[0]
-#     n_samples = degree.shape[1]
-#     p_hat = np.zeros((n_classes, n_clusters))
-#
-#     # degree_sum_over_t: 每个样本 i 的 degree 总和 (shape: n_samples,)
-#     degree_sum_over_t = np.sum(degree, axis=0)
-#
-#     for k in range(n_classes):
-#         indices_of_class_k = np.where(y == k)[0]
-#         mk = indices_of_class_k.size
-#         for t in range(n_clusters):
-#             if mk > 0:
-#                 # 每个 i 的 degree 权重 * degree 本身
-#                 weighted_degree = (degree[t, indices_of_class_k] / degree_sum_over_t[indices_of_class_k]) * degree[t, indices_of_class_k]
-#                 p_hat[k, t] = np.sum(weighted_degree) / mk
-#     return p_hat
-
-
-def compute_prob(membership_degree, membership_degree_pred, p_hat, prior, option=1):
-    # P(Z)=\sum_i P(Z|X_i) * P(X_i)
-    # pz = np.sum(membership_degree.T, axis=0)/membership_degree.shape[1]
-
-    # P(Z)=\sum_k P(Z|Y) * P(Y)
-    pz = np.sum(prior.reshape(-1, 1) * p_hat, axis=0)
+def compute_posterior(
+    membership_pred,
+    p_hat,
+    prior_train,
+    prior_pred,
+):
+    pz = compute_pz(p_hat, prior_train)
     diag_matrix = np.diag(1.0 / pz)
-    return prior * (membership_degree_pred.T @ diag_matrix @ p_hat.T)
-
-
-# def compute_derivative_part(membership_degree,membership_degree_pred, p_hat, loss_function):
-#     pz = np.sum(membership_degree.T, axis=0) / membership_degree.shape[1]
-#     diag_matrix = np.diag(1.0 / pz)
-#     return  membership_degree_pred.T @ diag_matrix @ p_hat.T @ loss_function
-#
-# def compute_risk(membership_degree,membership_degree_pred, p_hat, prior, loss_function):
-#     pz = np.sum(membership_degree.T, axis=0) / membership_degree.shape[1]
-#     diag_matrix = np.diag(1.0 / pz)
-#     return  prior * (membership_degree_pred.T @ diag_matrix @ p_hat.T) @ loss_function
-
-# def compute_derivative(membership_degree,membership_degree_pred, p_hat, prior, loss_function):
-#     a = compute_risk(membership_degree,membership_degree_pred, p_hat, prior, loss_function)  # (N, C)
-#     b = compute_derivative_part(membership_degree,membership_degree_pred, p_hat, loss_function)  # (N, C)
-#
-#     avg_risk = np.mean(a, axis=1, keepdims=True)  # (N, 1)
-#     avg_derivate = np.mean(b, axis=1, keepdims=True)  # (N, 1)
-#
-#     gradient_per_sample = 2 * (a - avg_risk) * (b - avg_derivate)  # (N, C)
-#
-#     # 现在，我们需要将其映射回 K 维空间
-#     final_gradient = membership_degree @ gradient_per_sample  # (K, C) @ (N, C) = (K,)
-#
-#     return final_gradient
-
-
-def compute_b_risk(membership_degree, p_hat, prior, loss_function):
-    return membership_degree.T @ ((prior.reshape(-1, 1) * loss_function).T @ p_hat).T
-
-
-def compute_posterior(membership_degree, p_hat, prior, loss_function):
-    """
-    Parameters
-    ----------
-    membership_degree : Array
-
-    p_hat : Array of floats
-        Probability estimate of observing the features profile.
-    prior : Array of floats
-        Real class proportions.
-    loss_function : Array
-        Loss function.
-
-    Returns
-    -------
-    Yhat : Vector
-        Predicted labels.
-    """
-
-    class_risk = (
-        membership_degree.T @ ((prior.reshape(-1, 1) * loss_function).T @ p_hat).T
-        + 1e-10
-    )
-    a = np.sum(class_risk, axis=1)[:, np.newaxis] - class_risk
-    prob = np.divide(a, np.sum(a, axis=1)[:, np.newaxis])
+    prob = (prior_pred.reshape(-1, 1) * (p_hat @ (diag_matrix @ membership_pred))).T
     return prob
 
 
-def discretize_features(samples, decision_tree_model):
+# def compute_sample_conditional_risk(membership_degree, p_hat, prior, loss_function):
+#     # 牢记这里并没有考虑Pz作为归一化项，添加后结果会不同
+#     return membership_degree.T @ ((prior.reshape(-1, 1) * loss_function).T @ p_hat).T
+#
+#
+# def compute_final_prob(membership, p_hat, prior, loss_function):
+#     sample_conditional_risk = compute_sample_conditional_risk(
+#         membership, p_hat, prior, loss_function
+#     )
+#     a = np.sum(sample_conditional_risk, axis=1)[:, np.newaxis] - sample_conditional_risk
+#     prob = np.divide(a, np.sum(a, axis=1)[:, np.newaxis])
+#     return prob
+
+
+def compute_class_conditional_risk(
+    y, loss_function, p_hat, membership, prior_train, prior_pred
+):
     """
+    Compute class-conditional risk for SPDBC (vectorized).
+
     Parameters
     ----------
-    samples : DataFrame
-    Features to be discretized.
-    decision_tree_model : Decision Tree Classifier Model
-    Model used for discretization.
+    y : array of shape (n_samples,)
+        True class labels.
+    loss_function : array of shape (n_classes, n_classes)
+        Loss matrix L[y_true, y_pred].
+    p_hat : array of shape (n_classes, n_clusters)
+        P(Z|Y).
+    membership : array of shape (n_clusters, n_samples)
+        Memberships P(Z|X_i).
+    prior_train : array of shape (n_classes,)
+        Training class priors P(Y) used to estimate P(Z).
+    prior_pred : array of shape (n_classes,)
+        Prediction priors used for risk weighting.
 
     Returns
     -------
-    discretized_features : Vector
-        Discretized features.
+    class_conditional_risk : array of shape (n_classes,)
+        Average risk per class.
     """
-    applied_samples = DecisionTreeClassifier.apply(
-        decision_tree_model, samples, check_input=True
+    # ----- shapes -----
+    # n_classes := n_classes, T := n_clusters, S := n_samples
+    # loss_function: (n_classes, n_classes)
+    # p_hat:         (n_classes, n_clusters)
+    # Pz_given_x:    (n_clusters, n_samples)
+    # prior_train:   (n_classes,)
+    # prior_pred:    (n_classes,)
+    n_classes = loss_function.shape[0]
+
+    # Class counts for averaging per class
+    n_class_k = np.bincount(y, minlength=n_classes)
+
+    # P(Z) using provided helper
+    pz = compute_pz(p_hat, prior_train)  # (T,)
+
+    # Build M = L[:, :, None] * prior_pred[:, None, None] * (p_hat[:, None, :] / pz)
+    # Shape: (n_classes, n_classes, n_clusters)
+    M = (
+        loss_function[:, :, None]
+        * prior_pred[:, None, None]
+        * (p_hat[:, None, :] / pz[None, None, :])
     )
 
-    def create_value_index_map(applied_samples):
-        unique_values, inverse_indices = np.unique(applied_samples, return_inverse=True)
-        value_to_index_map = {value: idx for idx, value in enumerate(unique_values)}
-        return np.array([value_to_index_map[value] for value in applied_samples])
+    # We need, for each sample with membership v (T,),  lambd = sum_{i,k} M[i, :, k] * v[k]
+    # This equals (sum over i of M)[ :, :] @ v
+    # Pre-sum over true-class axis i -> M_sum has shape (C_pred, T)
+    M_sum = M.sum(axis=0)  # (n_classes, T)
 
-    discretized_features = create_value_index_map(applied_samples)
+    # For all samples in one shot:
+    # Pz_given_x is (T, S).  Lambda_all = (M_sum @ Pz_given_x)^\top -> (S, n_classes)
+    Lambda_all = (M_sum @ membership).T  # (S, n_classes)
 
-    return discretized_features
+    # For each sample, choose predicted class that minimizes lambda
+    l_min_idx = np.argmin(Lambda_all, axis=1)  # (S,)
+
+    # Per-sample incurred loss is L[y_true, y_pred*] where y_pred* = argmin_j lambda_j
+    sample_losses = loss_function[y, l_min_idx]  # (S,)
+
+    # Average per true class: sum of losses within class / number of samples in class
+    # Use bincount with weights to aggregate per-class sums
+    sum_losses_per_class = np.bincount(y, weights=sample_losses, minlength=n_classes)
+
+    # Avoid divide-by-zero for classes absent in y
+    with np.errstate(invalid="ignore", divide="ignore"):
+        class_conditional_risk = np.where(
+            n_class_k > 0,
+            sum_losses_per_class / n_class_k,
+            0.0,
+        )
+
+    return class_conditional_risk
 
 
-def compute_global_risk(conditional_risk, prior):
+def compute_class_conditional_risk_old_version(
+    y, loss_function, p_hat, Pz_given_x, prior_train, prior_pred
+):
     """
+    Compute class-conditional risk for SPDBC.
+
     Parameters
     ----------
-    conditional_risk : ndarray of shape (K,)
-        Conditional risk
-    prior : ndarray of shape (K,)
-        Proportion of classes
+    y : array of shape (n_samples,)
+        True class labels.
+    loss_function : array of shape (n_classes, n_classes)
+        Loss matrix L[y_true, y_pred].
+    p_hat : array of shape (n_classes, n_clusters)
+        P(Z|Y).
+    Pz_given_x : array of shape (n_clusters, n_samples)
+        Memberships P(Z|X_i).
+    prior_train : array of shape (n_classes,)
+        Training class priors P(Y) used to estimate P(Z).
+    prior_pred : array of shape (n_classes,)
+        Prediction priors used for risk weighting.
 
     Returns
     -------
-    global_risk : float
-        Global risk.
+    class_conditional_risk : array of shape (n_classes,)
+        Average risk per class.
     """
-
-    global_risk = np.sum(conditional_risk * prior)
-
-    return global_risk
-
-
-def num2cell(a):
-    if type(a) is np.ndarray:
-        return [num2cell(x) for x in a]
-    else:
-        return a
-
-
-def proj_onto_polyhedral_set(pi, Box, K):
-    """
-    Parameters
-    ----------
-    pi : Array of floats
-        Vector to project onto the box-constrained simplex.
-    Box : Array
-        {'none', matrix} : Box-constraint on the priors.
-    K : int
-        Number of classes.
-
-    Returns
-    -------
-    piStar : Array of floats
-            Priors projected onto the box-constrained simplex.
-
-    """
-
-    # Verification of constraints
-    for i in range(K):
-        for j in range(2):
-            if Box[i, j] < 0:
-                Box[i, j] = 0
-            if Box[i, j] > 1:
-                Box[i, j] = 1
-
-    # Generate matrix G:
-    U = np.concatenate((np.eye(K), -np.eye(K), np.ones((1, K)), -np.ones((1, K))))
-    eta = Box[:, 1].tolist() + (-Box[:, 0]).tolist() + [1] + [-1]
-
-    n = U.shape[0]
-
-    G = np.zeros((n, n))
-    for i in range(n):
-        for j in range(n):
-            G[i, j] = np.vdot(U[i, :], U[j, :])
-
-    # Generate subsets of {1,...,n}:
-    M = (2**n) - 1
-    I = num2cell(np.zeros((1, M)))
-
-    i = 0
-    for l in range(n):
-        T = list(combinations(list(range(n)), l + 1))
-        for p in range(i, i + len(T)):
-            I[0][p] = T[p - i]
-        i = i + len(T)
-
-    # Algorithm
-
-    for m in range(M):
-        Im = I[0][m]
-
-        Gmm = np.zeros((len(Im), len(Im)))
-        ligne = 0
-        for i in Im:
-            colonne = 0
-            for j in Im:
-                Gmm[ligne, colonne] = G[i, j]
-                colonne += 1
-            ligne += 1
-
-        if np.linalg.det(Gmm) != 0:
-
-            nu = np.zeros((2 * K + 2, 1))
-            w = np.zeros((len(Im), 1))
-            for i in range(len(Im)):
-                w[i] = np.vdot(pi, U[Im[i], :]) - eta[Im[i]]
-
-            S = np.linalg.solve(Gmm, w)
-
-            for e in range(len(S)):
-                nu[Im[e]] = S[e]
-
-            if np.any(nu < -(10 ** (-10))) == False:
-                A = G.dot(nu)
-                z = np.zeros((1, 2 * K + 2))
-                for j in range(2 * K + 2):
-                    z[0][j] = np.vdot(pi, U[j, :]) - eta[j] - A[j]
-
-                if np.all(z <= 10 ** (-10)) == True:
-                    pi_new = pi
-                    for i in range(2 * K + 2):
-                        pi_new = pi_new - nu[i] * U[i, :]
-
-    piStar = pi_new
-
-    # Remove noisy small calculus errors:
-    piStar = piStar / piStar.sum()
-
-    return piStar
+    n_classes = loss_function.shape[0]
+    n_class_k = np.bincount(y)
+    class_conditional_risk = np.zeros(n_classes)
+    # P(Z)
+    pz = compute_pz(p_hat, prior_train)
+    # 加上 1/P(Z)
+    M = (
+        loss_function[:, :, None]
+        * prior_pred[:, None, None]
+        * (p_hat[:, None, :] / (pz[None, None, :] + 1e-12))
+    )
+    for class_index in range(n_classes):
+        indices = np.where(y == class_index)[0]
+        for i in indices:
+            sample_membership = Pz_given_x.T[i]  # (T,)
+            lambd = np.einsum("ijk,k->j", M, sample_membership)
+            l_min = np.argmin(lambd)
+            class_conditional_risk[class_index] += (
+                loss_function[class_index, l_min] / n_class_k[class_index]
+            )
+    return class_conditional_risk
 
 
-def proj_simplex_Condat(K, pi):
+def proj_simplex_Condat(n_classes, prob):
     """
     This function is inspired from the article: L.Condat, "Fast projection onto the simplex and the
     ball", Mathematical Programming, vol.158, no.1, pp. 575-585, 2016.
     Parameters
     ----------
-    K : int
+    n_classes : int
         Number of classes.
-    pi : Array of floats
+    prob : Array of floats
         Vector to project onto the simplex.
 
     Returns
@@ -421,296 +233,51 @@ def proj_simplex_Condat(K, pi):
 
     """
 
-    linK = np.linspace(1, K, K)
+    linK = np.linspace(1, n_classes, n_classes)
     piProj = np.maximum(
-        pi - np.max(((np.cumsum(np.sort(pi)[::-1]) - 1) / (linK[:]))), 0
+        prob - np.max(((np.cumsum(np.sort(prob)[::-1]) - 1) / (linK[:]))), 0
     )
     piProj = piProj / np.sum(piProj)
     return piProj
 
 
-def proj_simplex_duchi(pi):
-    """
-    Projection of a vector onto the probability simplex using the method of:
-    J. Duchi, S. Shalev-Shwartz, Y. Singer, and T. Chandra,
-    "Efficient Projections onto the l1-Ball for Learning in High Dimensions", ICML 2008.
-
-    Parameters
-    ----------
-    pi : ndarray of shape (K,)
-        Input vector to be projected onto the probability simplex.
-
-    Returns
-    -------
-    piProj : ndarray of shape (K,)
-        Projected vector on the simplex.
-    """
-    K = pi.shape[0]
-    # Sort pi in descending order
-    u = np.sort(pi)[::-1]
-    # Compute cumulative sum
-    cssv = np.cumsum(u)
-    # Find the threshold index
-    rho = np.where(u > (cssv - 1) / np.arange(1, K + 1))[0][-1]
-    # Compute the threshold theta
-    theta = (cssv[rho] - 1) / (rho + 1)
-    # Apply the soft-thresholding
-    piProj = np.maximum(pi - theta, 0)
-    return piProj
-
-
-def proj_onto_U(pi, Box, K):
-    """
-    Parameters
-    ----------
-    pi : Array of floats
-        Vector to project onto the box-constrained simplex..
-    Box : Matrix
-        {'none', matrix} : Box-constraint on the priors.
-    K : int
-        Number of classes.
-
-    Returns
-    -------
-    pi_new : Array of floats
-            Priors projected onto the box-constrained simplex.
-
-    """
-
-    check_U = 0
-    if pi.sum() == 1:
-        for k in range(K):
-            if (pi[0][k] >= Box[k, 0]) & (pi[0][k] <= Box[k, 1]):
-                check_U = check_U + 1
-
-    if check_U == K:
-        pi_new = pi
-
-    if check_U < K:
-        pi_new = proj_onto_polyhedral_set(pi, Box, K)
-
-    return pi_new
-
-
-def compute_piStar(pHat, y_train, K, L, N, Box):
-    """
-    Parameters
-    ----------
-    pHat : Array of floats
-        Probability estimate of observing the features profile in each class.
-    y_train : Dataframe
-        Real labels of the training set.
-    K : int
-        Number of classes.
-    L : Array
-        Loss Function.
-    N : int
-        Number of iterations in the projected subgradient algorithm.
-    Box : Array
-        {'none', matrix} : Box-constraints on the priors.
-
-    Returns
-    -------
-    piStar : Array of floats
-        Least favorable priors.
-    rStar : float
-        Global risks.
-    RStar : Array of float
-        Conditional risks.
-    V_iter : Array
-        Values of the V function at each iteration.
-    stockpi : Array
-        Values of pi at each iteration.
-
-    """
-    # IF BOX-CONSTRAINT == NONE (PROJECTION ONTO THE SIMPLEX)
-    if Box is None:
-        pi = compute_prior(y_train, K).reshape(1, -1)
-        rStar = 0
-        piStar = pi
-        RStar = 0
-
-        V_iter = []
-        stockpi = np.zeros((K, N))
-
-        for n in range(1, N + 1):
-            # Compute subgradient R at point pi (see equation (21) in the paper)
-            lambd = np.dot(L, pi.T * pHat)
-            R = np.zeros((1, K))
-
-            mu_k = np.sum(L[:, np.argmin(lambd, axis=0)] * pHat, axis=1)
-            R[0, :] = mu_k
-            stockpi[:, n - 1] = pi[0, :]
-
-            r = compute_global_risk(R, pi)
-            V_iter.append(r)
-            if r > rStar:
-                rStar = r
-                piStar = pi
-                RStar = R
-                # Update pi for iteration n+1
-            gamma = 1 / n
-            eta = np.maximum(float(1), np.linalg.norm(R))
-            w = pi + (gamma / eta) * R
-            pi = proj_simplex_Condat(K, w)
-
-        # Check if pi_N == piStar
-        lambd = np.dot(L, pi.T * pHat)
-        R = np.zeros((1, K))
-
-        mu_k = np.sum(L[:, np.argmin(lambd, axis=0)] * pHat, axis=1)
-        R[0, :] = mu_k
-        stockpi[:, n - 1] = pi[0, :]
-
-        r = compute_global_risk(R, pi)
-        if r > rStar:
-            rStar = r
-            piStar = pi
-            RStar = R
-
-    # IF BOX-CONSTRAINT
-    if Box is not None:
-        pi = compute_prior(y_train, K).reshape(1, -1)
-        rStar = 0
-        piStar = pi
-        RStar = 0
-
-        V_iter = []
-        stockpi = np.zeros((K, N))
-
-        for n in range(1, N + 1):
-            # Compute subgradient R at point pi (see equation (21) in the paper)
-            lambd = np.dot(L, pi.T * pHat)
-            R = np.zeros((1, K))
-
-            mu_k = np.sum(L[:, np.argmin(lambd, axis=0)] * pHat, axis=1)
-            R[0, :] = mu_k
-            stockpi[:, n - 1] = pi[0, :]
-
-            r = compute_global_risk(R, pi)
-            V_iter.append(r)
-            if r > rStar:
-                rStar = r
-                piStar = pi
-                RStar = R
-                # Update pi for iteration n+1
-            gamma = 1 / n
-            eta = np.maximum(float(1), np.linalg.norm(R))
-            w = pi + (gamma / eta) * R
-            pi = proj_onto_U(w, Box, K)
-
-        # Check if pi_N == piStar
-        lambd = np.dot(L, pi.T * pHat)
-        R = np.zeros((1, K))
-
-        mu_k = np.sum(L[:, np.argmin(lambd, axis=0)] * pHat, axis=1)
-        R[0, :] = mu_k
-        stockpi[:, n - 1] = pi[0, :]
-
-        r = compute_global_risk(R, pi)
-        if r > rStar:
-            rStar = r
-            piStar = pi
-            RStar = R
-
-    return piStar, rStar, RStar, V_iter, stockpi
-
-
-def compute_SPDBC_class_conditional_risk(
-    X, y, class_index, loss_function, p_hat, membership_degree, pi
-):
-    nb_class_k = np.unique(y, return_counts=True)[1]
-    # K = loss_function.shape[0]
-    # T = p_hat.shape[1]
-    r = 0
-
-    # for i in range(X.shape[0]):
-    #     lambd = np.zeros(K)
-    #     for l in range(0, K):
-    #         for t in range(0, T):
-    #             for k in range(0, K):
-    #                 lambd[l] += loss_function[k, l] * pi[k] * p_hat[k, t] * membership_degree.T[i, t]
-    #     for l in range(0, K):
-    #         if lambd[l] == np.min(lambd) and y[i] == class_index:
-    #             r += loss_function[class_index, l] / nb_class_k[class_index]
-
-    # 预先计算一次固定部分 (K, K, T) 张量
-    M = loss_function[:, :, None] * pi[:, None, None] * p_hat[:, None, :]  # (K, K, T)
-
-    indices = np.where(y == class_index)[0]
-    for i in indices:
-        membership = membership_degree.T[i]  # (T,)
-        lambd = np.einsum("ijk,k->j", M, membership)
-        l_min = np.argmin(lambd)
-        r += loss_function[class_index, l_min] / nb_class_k[class_index]
-    return r
-
-
-def compute_SPDBC_pi_star(
-    X,
+def compute_prior_best(
     y,
     loss_function,
     p_hat,
     membership_degree,
-    pi,
+    prior_train,
     alpha=1,
     beta=0.5,
     n_iter=300,
     eps=1e-2,
     return_history=False,
 ):
-    """
-    优化SPDBC的先验概率pi，使用带动量的Projected Gradient Descent方法。
 
-    Parameters
-    ----------
-    X : ndarray
-        特征数据
-    y : ndarray
-        标签数据
-    loss_function : ndarray
-        K x D的损失矩阵
-    p_hat : ndarray
-        条件概率估计值
-    membership_degree : ndarray
-        每个样本对每个profile的隶属度
-    pi : ndarray
-        初始先验概率
-    alpha : float
-        学习率调节因子
-    beta : float
-        动量因子（通常为0.9）
-    n_iter : int
-        最大迭代次数
-    eps : float
-        收敛阈值（使用 ∑|G|）
-    return_history : bool
-        是否返回risk收敛历史（∑|G|）
-
-    Returns
-    -------
-    pi : ndarray
-        优化后的先验概率
-    risk_history : list (可选)
-        每次迭代的梯度绝对值总和（用于收敛观察）
-    """
-    K = loss_function.shape[0]
-    if K == 2:
-        return compute_pi_star_2(
-            X, y, loss_function, p_hat, membership_degree, n_iter, eps, return_history
+    prior_best = prior_train.copy()
+    n_classes = loss_function.shape[0]
+    if n_classes == 2:
+        return compute_prior_best_binary(
+            y=y,
+            loss_function=loss_function,
+            p_hat=p_hat,
+            membership=membership_degree,
+            prior_train=prior_train,
+            eps=eps,
+            return_history=return_history,
         )
-    risk_history = []
-    v = np.zeros(K)  # 初始化动量项
+    history = []
+    v = np.zeros(n_classes)  # 初始化动量项
 
-    for n in range(1, n_iter + 1):
+    for n in range(n_iter):
         # 计算当前 class-conditional 风险和 global 风险
-        class_conditional_risk = np.array(
-            [
-                compute_SPDBC_class_conditional_risk(
-                    X, y, k, loss_function, p_hat, membership_degree, pi
-                )
-                for k in range(K)
-            ]
+        class_conditional_risk = compute_class_conditional_risk(
+            y=y,
+            loss_function=loss_function,
+            p_hat=p_hat,
+            membership=membership_degree,
+            prior_train=prior_train,
+            prior_pred=prior_best,
         )
 
         # global_risk = np.dot(pi, class_conditional_risk)
@@ -718,10 +285,8 @@ def compute_SPDBC_pi_star(
 
         G = class_conditional_risk - global_risk
 
-        # grad = np.sum(G**2)
-
         max_gap = np.max(class_conditional_risk) - np.min(class_conditional_risk)
-        risk_history.append(max_gap)
+        history.append(max_gap)
         # 判断收敛
         if max_gap < eps:
             break
@@ -730,131 +295,83 @@ def compute_SPDBC_pi_star(
         v = beta * v + (1 - beta) * G
 
         # 步长和归一化因子
-        gamma = alpha / n
+        gamma = alpha / (n + 1)
         eta = max(1.0, np.sum(v**2))  # 用动量向量v代替G
 
         # 使用带动量的方向更新 pi
-        w = pi + (gamma / eta) * v
-        pi_new = proj_simplex_Condat(K, w)
-
-        # 更新 pi
-        pi = pi_new
+        w = prior_best + (gamma / eta) * v
+        prior_best = proj_simplex_Condat(n_classes, w)
 
     if return_history:
-        return pi, risk_history
+        return prior_best, history
     else:
-        return pi
+        return prior_best
 
 
-# def compute_pi_star_2(
-#     X,
-#     y,
-#     loss_function,
-#     p_hat,
-#     membership_degree,
-#     n_iter=300,
-#     eps=1e-6,
-#     return_history=False,
-# ):
-#     print("2类方法")
-#     pi_inf = np.array([0, 1])
-#     pi_sup = np.array([1, 0])
-#     risk_history = []
-#     for n in range(1, n_iter + 1):
-#         pi_curren = (pi_inf + pi_sup) / 2
-#
-#         R = np.array(
-#             [
-#                 compute_SPDBC_class_conditional_risk(
-#                     X, y, k, loss_function, p_hat, membership_degree, pi_curren
-#                 )
-#                 for k in range(2)
-#             ]
-#         )
-#         risk_history.append(R[0] - R[1])
-#         if R[0] - R[1] > eps:
-#             pi_inf = pi_curren
-#         elif R[0] - R[1] < -eps:
-#             pi_sup = pi_curren
-#         else:
-#             break
-#     if return_history:
-#         return pi_curren, risk_history
-#     return pi_curren
-import numpy as np
-
-
-import numpy as np
-
-
-def compute_pi_star_2(
-    X,
+def compute_prior_best_binary(
     y,
     loss_function,
     p_hat,
-    membership_degree,
-    n_iter=300,
-    eps=1e-5,
+    membership,
+    prior_train,
+    n_iter=100,
+    eps=1e-3,
     return_history=False,
-    pi_eps=1e-4,
+    prior_update_eps=1e-5,
 ):
-    """
-    在二分类下寻找使 C(pi)=R0(pi)-R1(pi)=0 的先验 pi。
-    如果不存在零点，则返回 |C| 最小的 pi 作为近似解。
-    """
-
-    def C_of_pi(pi_vec):
-        R = np.array(
-            [
-                compute_SPDBC_class_conditional_risk(
-                    X, y, k, loss_function, p_hat, membership_degree, pi_vec
-                )
-                for k in range(2)
-            ]
+    def compute_risk_gap(prior_pred):
+        class_conditional_risk = compute_class_conditional_risk(
+            y=y,
+            loss_function=loss_function,
+            p_hat=p_hat,
+            membership=membership,
+            prior_train=prior_train,
+            prior_pred=prior_pred,
         )
-        return float(R[0] - R[1]), R
+        return class_conditional_risk[0] - class_conditional_risk[1]
 
     # 两端点
-    pi_lo = np.array([0.0, 1.0])  # pi0=0
-    pi_hi = np.array([1.0, 0.0])  # pi0=1
-    Clo, Rlo = C_of_pi(pi_lo)
-    Chi, Rhi = C_of_pi(pi_hi)
+    prior_lower = np.array([0.0, 1.0])  # pi0=0
+    prior_upper = np.array([1.0, 0.0])  # pi0=1
+    gap_lower = compute_risk_gap(prior_lower)
+    gap_upper = compute_risk_gap(prior_upper)
 
     history = []
 
-    if abs(Clo) <= abs(Chi):
-        best_pi, best_C = pi_lo, Clo
+    if abs(gap_lower) <= abs(gap_upper):
+        prior_best, gap_best = prior_lower, gap_lower
     else:
-        best_pi, best_C = pi_hi, Chi
+        prior_best, gap_best = prior_upper, gap_upper
 
     # 常规二分
-    for it in range(1, n_iter + 1):
-        pi_mid = 0.5 * (pi_lo + pi_hi)
-        Cmid, _ = C_of_pi(pi_mid)
+    for it in range(n_iter):
+        pi_mid = 0.5 * (prior_lower + prior_upper)
+        gap_mid = compute_risk_gap(pi_mid)
 
         if return_history:
-            history.append(Cmid)
+            history.append(gap_mid)
 
         # 更新最优近似
-        if abs(Cmid) < abs(best_C):
-            best_pi, best_C = pi_mid.copy(), Cmid
+        if abs(gap_mid) < abs(gap_best):
+            prior_best, gap_best = pi_mid.copy(), gap_mid
 
         # 命中根
-        if abs(Cmid) <= eps:
+        if abs(gap_mid) <= eps:
             if return_history:
                 return pi_mid, history
             return pi_mid
 
         # 更新区间
-        if Clo * Cmid > 0:
-            pi_lo, Clo = pi_mid, Cmid
+        if gap_lower * gap_mid > 0:
+            prior_lower, gap_lower = pi_mid, gap_mid
         else:
-            pi_hi, Chi = pi_mid, Cmid
+            prior_upper, gap_upper = pi_mid, gap_mid
 
-        # # 区间收敛
-        # if (pi_hi[0] - pi_lo[0]) <= pi_eps:
-        #     break
+        # 区间收敛
+        if (prior_upper[0] - prior_lower[0]) <= prior_update_eps:
+            break
 
     if return_history:
-        return best_pi, history
-    return best_pi
+        return prior_best, history
+    else:
+        return prior_best
